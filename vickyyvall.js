@@ -178,7 +178,7 @@ function randomStartButtons() {
 
 bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
     const text =
-        `<b>Vgen ai</b> ✨\n\n` +
+        `<b>VGen AI Multifungsi</b> 🏴󠁧󠁢󠁥󠁮󠁧󠁿\n\n` +
         `Teman ai yang siap nemenin lu kapan aja. 😎\n\n` +
         `Mau ngobrol, cari ide, belajar, coding, bahas bola, ` +
         `atau sekadar random juga gas.\n\n` +
