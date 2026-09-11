@@ -4,7 +4,8 @@
  * Node.js 22+.
  *
  * IMPORTANT:
- * - API keys are loaded from ./vgen-secrets.json, never sent to the browser.
+ * - API keys are supplied by the local HTML activation panel.
+ * - API keys are NOT hard-coded in this JS file.
  * - TELEGRAM_BOT_TOKEN stays in environment variables.
  */
 
@@ -17,47 +18,87 @@ const TelegramBot = require('node-telegram-bot-api');
 process.on('uncaughtException', (err) => {
     console.error('[UNCAUGHT EXCEPTION]', safeError(err));
 });
+
 process.on('unhandledRejection', (reason) => {
     console.error('[UNHANDLED REJECTION]', safeError(reason));
 });
 
 function safeError(err) {
     let msg = String(err?.message || err || 'Unknown error');
+
     try {
-        const all = [...(secretConfig?.geminiAccounts || []), ...(secretConfig?.openaiAccounts || [])];
+        const all = [
+            ...(secretConfig?.geminiAccounts || []),
+            ...(secretConfig?.openaiAccounts || [])
+        ];
+
         for (const item of all) {
-            if (item?.key) msg = msg.split(item.key).join('[REDACTED]');
+            if (item?.key) {
+                msg = msg.split(item.key).join('[REDACTED]');
+            }
         }
     } catch {}
-    return msg.replace(/key=[^&\s]+/gi, 'key=[REDACTED]').slice(0, 700);
+
+    return msg
+        .replace(/key=[^&\s]+/gi, 'key=[REDACTED]')
+        .slice(0, 700);
 }
 
+/* ============================================================
+   PROMPT
+   ============================================================ */
+
 let vgenPrompt = '';
+
 try {
     vgenPrompt = require('./prompt.js');
 } catch {
     vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
 }
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI_SINI';
+/* ============================================================
+   TELEGRAM CONFIG
+   ============================================================ */
+
+const TELEGRAM_BOT_TOKEN =
+    process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI_SINI';
+
 const PORT = process.env.PORT || 8080;
+
 const MAX_HISTORY = 15;
 const MAX_TEXT_FILE = 5000;
 
 if (TELEGRAM_BOT_TOKEN === 'PASTE_BOT_TOKEN_DI_SINI') {
-    console.error('❌ TELEGRAM_BOT_TOKEN belum diisi. Set environment variable TELEGRAM_BOT_TOKEN.');
+    console.error(
+        '❌ TELEGRAM_BOT_TOKEN belum diisi. Set environment variable TELEGRAM_BOT_TOKEN.'
+    );
+
     process.exit(1);
 }
 
-const secretFile = path.join(__dirname, 'vgen-secrets.json');
-let secretConfig = { geminiAccounts: [], openaiAccounts: [] };
+/* ============================================================
+   AI CONFIG
+   API KEY DIAMBIL DARI HTML LOCAL ACTIVATION PANEL.
+   TIDAK ADA API KEY YANG DITULIS DI FILE JS INI.
+   ============================================================ */
 
-try {
-    secretConfig = JSON.parse(fs.readFileSync(secretFile, 'utf8'));
-} catch (e) {
-    console.error('❌ vgen-secrets.json tidak ditemukan/tidak valid:', safeError(e));
-    process.exit(1);
-}
+let secretConfig = {
+    geminiAccounts: [],
+    openaiAccounts: []
+};
+
+/* ============================================================
+   JANGAN UBAH MODEL GEMINI INI
+   URUTAN WAJIB:
+
+   1. gemini-2.5-flash-lite
+   2. gemini-2.5-flash
+   3. gemini-3.5-flash
+
+   Setelah model terakhir habis:
+   -> akun/email berikutnya
+   -> kembali ke model Lite
+   ============================================================ */
 
 const GEMINI_MODELS = [
     'gemini-2.5-flash-lite',
@@ -65,69 +106,161 @@ const GEMINI_MODELS = [
     'gemini-3.5-flash'
 ];
 
+/* ============================================================
+   OPENAI MODEL
+   ============================================================ */
+
 const OPENAI_MODEL = 'gpt-5.4-mini';
 
-if (!Array.isArray(secretConfig.geminiAccounts) || secretConfig.geminiAccounts.length === 0) {
-    console.error('❌ Tidak ada Gemini API account di vgen-secrets.json.');
-    process.exit(1);
-}
+/* ============================================================
+   DATABASE
+   HANYA MENYIMPAN STATE NON-SECRET.
+   API KEY TIDAK DISIMPAN KE DATABASE.
+   ============================================================ */
 
 const dbFile = path.join(__dirname, 'database.json');
-let db = { apiConfig: {} };
+
+let db = {
+    apiConfig: {}
+};
 
 if (fs.existsSync(dbFile)) {
     try {
-        db = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+        db = JSON.parse(
+            fs.readFileSync(dbFile, 'utf8')
+        );
     } catch (e) {
-        console.error('❌ Gagal membaca database.json:', safeError(e));
+        console.error(
+            '❌ Gagal membaca database.json:',
+            safeError(e)
+        );
     }
 }
 
 function saveDb() {
-    // Hanya simpan state non-secret.
     db.apiConfig = {
         provider: activeProvider,
         geminiAccountIndex: geminiAccountIndex,
         geminiModelIndex: geminiModelIndex
     };
-    fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
+
+    fs.writeFileSync(
+        dbFile,
+        JSON.stringify(db, null, 2)
+    );
 }
 
-let activeProvider = String(db.apiConfig?.provider || '').toUpperCase() || null;
-let geminiAccountIndex = Number.isInteger(db.apiConfig?.geminiAccountIndex) ? db.apiConfig.geminiAccountIndex : 0;
-let geminiModelIndex = Number.isInteger(db.apiConfig?.geminiModelIndex) ? db.apiConfig.geminiModelIndex : 0;
+/* ============================================================
+   ACTIVE PROVIDER / GEMINI POINTER
+   ============================================================ */
 
-if (geminiAccountIndex < 0 || geminiAccountIndex >= secretConfig.geminiAccounts.length) geminiAccountIndex = 0;
-if (geminiModelIndex < 0 || geminiModelIndex >= GEMINI_MODELS.length) geminiModelIndex = 0;
+let activeProvider =
+    String(db.apiConfig?.provider || '').toUpperCase() || null;
+
+let geminiAccountIndex =
+    Number.isInteger(db.apiConfig?.geminiAccountIndex)
+        ? db.apiConfig.geminiAccountIndex
+        : 0;
+
+let geminiModelIndex =
+    Number.isInteger(db.apiConfig?.geminiModelIndex)
+        ? db.apiConfig.geminiModelIndex
+        : 0;
+
+if (geminiAccountIndex < 0) {
+    geminiAccountIndex = 0;
+}
+
+if (
+    geminiModelIndex < 0 ||
+    geminiModelIndex >= GEMINI_MODELS.length
+) {
+    geminiModelIndex = 0;
+}
+
+/*
+ * database.json bisa saja mengatakan provider aktif.
+ * Tetapi API key memang tidak disimpan di database.
+ *
+ * Jadi setelah Node restart:
+ * HTML harus mengirim ulang konfigurasi.
+ */
+
+if (
+    activeProvider === 'GEMINI' &&
+    !secretConfig.geminiAccounts.length
+) {
+    activeProvider = null;
+}
+
+if (
+    activeProvider === 'OPENAI' &&
+    !secretConfig.openaiAccounts.length
+) {
+    activeProvider = null;
+}
+
+/* ============================================================
+   MEMORY
+   ============================================================ */
 
 const userHistory = new Map();
+
 const aiMutedChats = new Set();
+
 const failoverInFlight = new Map();
+
+/* ============================================================
+   HISTORY
+   ============================================================ */
 
 function historyFor(chatId) {
     const key = String(chatId);
-    if (!userHistory.has(key)) userHistory.set(key, []);
+
+    if (!userHistory.has(key)) {
+        userHistory.set(key, []);
+    }
+
     return userHistory.get(key);
 }
 
 function pushHistory(chatId, role, content) {
     const history = historyFor(chatId);
-    history.push({ role, content });
+
+    history.push({
+        role,
+        content
+    });
+
     if (history.length > MAX_HISTORY) {
-        history.splice(0, history.length - MAX_HISTORY);
+        history.splice(
+            0,
+            history.length - MAX_HISTORY
+        );
     }
 }
+
+/* ============================================================
+   TEXT HELPERS
+   ============================================================ */
 
 function cleanText(value) {
     return String(value || '').trim();
 }
 
 function nowWIB() {
-    return new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+    return new Date().toLocaleString(
+        'id-ID',
+        {
+            timeZone: 'Asia/Jakarta'
+        }
+    );
 }
 
 function isCommand(text) {
-    return /^\/(?:start|help|mute|unmute|status|reset)(?:@\w+)?(?:\s|$)/i.test(text);
+    return /^\/(?:start|help|mute|unmute|status|reset)(?:@\w+)?(?:\s|$)/i.test(
+        text
+    );
 }
 
 function escapeHTML(value) {
@@ -139,104 +272,325 @@ function escapeHTML(value) {
         .replace(/'/g, '&#039;');
 }
 
+/* ============================================================
+   MARKDOWN -> TELEGRAM HTML
+   ============================================================ */
+
 function convertMarkdownToHTML(text) {
-    if (!text) return '';
+    if (!text) {
+        return '';
+    }
+
     let formatted = String(text);
 
-    formatted = formatted.replace(/```([\s\S]*?)```/g, (match, codeBlock) => {
-        let cleanCode = codeBlock.replace(/^[a-z]+\n/i, '');
-        let safeCode = escapeHTML(cleanCode);
-        return `<pre><code>${safeCode}</code></pre>`;
-    });
+    formatted = formatted.replace(
+        /```([\s\S]*?)```/g,
+        (match, codeBlock) => {
+            let cleanCode = codeBlock.replace(
+                /^[a-z]+\n/i,
+                ''
+            );
 
-    formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
-        return `<code>${escapeHTML(code)}</code>`;
-    });
+            let safeCode = escapeHTML(cleanCode);
 
-    formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    formatted = formatted.replace(/\*([^*]+)\*/g, '<b>$1</b>');
-    formatted = formatted.replace(/[\uFFFD]/g, '•');
+            return `<pre><code>${safeCode}</code></pre>`;
+        }
+    );
+
+    formatted = formatted.replace(
+        /`([^`]+)`/g,
+        (match, code) => {
+            return `<code>${escapeHTML(code)}</code>`;
+        }
+    );
+
+    formatted = formatted.replace(
+        /\*\*([^*]+)\*\*/g,
+        '<b>$1</b>'
+    );
+
+    formatted = formatted.replace(
+        /\*([^*]+)\*/g,
+        '<b>$1</b>'
+    );
+
+    formatted = formatted.replace(
+        /[\uFFFD]/g,
+        '•'
+    );
 
     return formatted;
 }
 
+/* ============================================================
+   TELEGRAM MESSAGE SPLITTER
+   ============================================================ */
+
 function splitForTelegram(text, max = 4000) {
     const out = [];
+
     let rest = String(text || '');
+
     while (rest.length > max) {
-        let cut = rest.lastIndexOf('\n', max);
-        if (cut < 500) cut = max;
-        out.push(rest.slice(0, cut));
-        rest = rest.slice(cut).trimStart();
+        let cut = rest.lastIndexOf(
+            '\n',
+            max
+        );
+
+        if (cut < 500) {
+            cut = max;
+        }
+
+        out.push(
+            rest.slice(0, cut)
+        );
+
+        rest = rest
+            .slice(cut)
+            .trimStart();
     }
-    if (rest) out.push(rest);
-    return out.length ? out : [''];
+
+    if (rest) {
+        out.push(rest);
+    }
+
+    return out.length
+        ? out
+        : [''];
 }
 
-async function sendReply(bot, chatId, text, extra = {}) {
-    const htmlText = convertMarkdownToHTML(text);
-    for (const chunk of splitForTelegram(htmlText)) {
+/* ============================================================
+   TELEGRAM SEND
+   ============================================================ */
+
+async function sendReply(
+    bot,
+    chatId,
+    text,
+    extra = {}
+) {
+    const htmlText =
+        convertMarkdownToHTML(text);
+
+    for (
+        const chunk of splitForTelegram(htmlText)
+    ) {
         try {
-            await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', ...extra });
+            await bot.sendMessage(
+                chatId,
+                chunk,
+                {
+                    parse_mode: 'HTML',
+                    ...extra
+                }
+            );
         } catch (e) {
-            console.error('[SEND HTML ERROR]', safeError(e));
+            console.error(
+                '[SEND HTML ERROR]',
+                safeError(e)
+            );
+
             try {
-                await bot.sendMessage(chatId, chunk.replace(/<[^>]*>?/gm, ''), {
-                    ...extra,
-                    parse_mode: undefined
-                });
+                await bot.sendMessage(
+                    chatId,
+                    chunk.replace(
+                        /<[^>]*>?/gm,
+                        ''
+                    ),
+                    {
+                        ...extra,
+                        parse_mode: undefined
+                    }
+                );
             } catch {}
         }
     }
 }
 
+/* ============================================================
+   DELAY HELPERS
+   ============================================================ */
+
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(
+        resolve => setTimeout(resolve, ms)
+    );
 }
 
 function randomMs(min, max) {
-    return Math.floor(min + Math.random() * (max - min + 1));
+    return Math.floor(
+        min +
+        Math.random() *
+        (max - min + 1)
+    );
 }
 
+/* ============================================================
+   GEMINI TARGET
+   ============================================================ */
+
 function currentGeminiTarget() {
-    const account = secretConfig.geminiAccounts[geminiAccountIndex];
+    const accounts =
+        Array.isArray(
+            secretConfig.geminiAccounts
+        )
+            ? secretConfig.geminiAccounts
+            : [];
+
+    if (!accounts.length) {
+        throw new Error(
+            'Gemini belum diaktifkan dari HTML.'
+        );
+    }
+
+    if (
+        geminiAccountIndex >=
+        accounts.length
+    ) {
+        geminiAccountIndex = 0;
+    }
+
+    const account =
+        accounts[geminiAccountIndex];
+
     return {
-        accountIndex: geminiAccountIndex,
-        modelIndex: geminiModelIndex,
-        email: account.email,
-        key: account.key,
-        model: GEMINI_MODELS[geminiModelIndex]
+        accountIndex:
+            geminiAccountIndex,
+
+        modelIndex:
+            geminiModelIndex,
+
+        email:
+            account.email,
+
+        key:
+            account.key,
+
+        model:
+            GEMINI_MODELS[
+                geminiModelIndex
+            ]
     };
 }
 
+/* ============================================================
+   GEMINI FAILOVER POINTER
+   ============================================================ */
+
 function advanceGeminiTarget() {
+    /*
+     * Model berikutnya.
+     *
+     * Lite
+     *   ↓
+     * Flash
+     *   ↓
+     * 3.5 Flash
+     *   ↓
+     * Email berikutnya + Lite
+     */
+
     geminiModelIndex++;
 
-    if (geminiModelIndex >= GEMINI_MODELS.length) {
+    if (
+        geminiModelIndex >=
+        GEMINI_MODELS.length
+    ) {
         geminiModelIndex = 0;
+
         geminiAccountIndex++;
 
-        if (geminiAccountIndex >= secretConfig.geminiAccounts.length) {
+        if (
+            geminiAccountIndex >=
+            secretConfig.geminiAccounts.length
+        ) {
             geminiAccountIndex = 0;
         }
     }
 
     saveDb();
+
     return currentGeminiTarget();
 }
 
-function isQuotaOrRateLimitError(status, data) {
-    const code = String(data?.error?.status || data?.error?.code || '').toUpperCase();
-    const msg = String(data?.error?.message || '').toLowerCase();
+/* ============================================================
+   QUOTA / RATE LIMIT DETECTION
+   ============================================================ */
 
-    if (status === 429) return true;
-    if (status === 403 && /(quota|rate.?limit|resource.?exhausted|exceeded|permission)/i.test(msg)) return true;
-    if (code.includes('RESOURCE_EXHAUSTED')) return true;
-    return /(quota|rate.?limit|resource.?exhausted|too many requests|exceeded)/i.test(msg);
+function isQuotaOrRateLimitError(
+    status,
+    data
+) {
+    const code =
+        String(
+            data?.error?.status ||
+            data?.error?.code ||
+            ''
+        ).toUpperCase();
+
+    const msg =
+        String(
+            data?.error?.message ||
+            ''
+        ).toLowerCase();
+
+    if (status === 429) {
+        return true;
+    }
+
+    if (
+        status === 403 &&
+        /(quota|rate.?limit|resource.?exhausted|exceeded|permission)/i.test(
+            msg
+        )
+    ) {
+        return true;
+    }
+
+    if (
+        code.includes(
+            'RESOURCE_EXHAUSTED'
+        )
+    ) {
+        return true;
+    }
+
+    return /(
+        quota|
+        rate.?limit|
+        resource.?exhausted|
+        too many requests|
+        exceeded
+    )/i.test(msg);
 }
 
-async function sendFailoverSequence(chatId, sourceMessageId) {
+/* ============================================================
+   FAILOVER MESSAGE SEQUENCE
+   ============================================================
+
+   1. ⏳Loading
+      -> REPLY / QUOTE pesan user
+
+   2. Server penuh, tunggu sebentar...
+      -> TANPA quote
+
+   3. AI Berevolusi kembali✅
+      -> TANPA quote
+
+   Setelah itu askGemini lanjut ke target berikutnya
+   dan pesan user tetap diproses.
+   ============================================================ */
+
+async function sendFailoverSequence(
+    chatId,
+    sourceMessageId
+) {
     const key = String(chatId);
+
+    /*
+     * Jangan membuat banyak sequence failover
+     * secara bersamaan untuk chat yang sama.
+     */
 
     if (failoverInFlight.has(key)) {
         return failoverInFlight.get(key);
@@ -244,595 +598,1481 @@ async function sendFailoverSequence(chatId, sourceMessageId) {
 
     const job = (async () => {
         try {
-            // Pesan pertama MUTLAK reply/quote ke pesan lawan bicara.
-            await sendReply(bot, chatId, '⏳Loading', {
-                reply_to_message_id: sourceMessageId
-            });
+            /* ================================================
+               1. LOADING
+               ================================================ */
 
-            // Random 1/2/3 detik.
-            await sleep(randomMs(1000, 3000));
+            await sendReply(
+                bot,
+                chatId,
+                '⏳Loading',
+                {
+                    reply_to_message_id:
+                        sourceMessageId
+                }
+            );
 
-            await sendReply(bot, chatId, 'Server penuh, tunggu sebentar...');
+            /*
+             * Random 1–3 detik.
+             */
 
-            // Thinking terakhir singkat dan random, tidak dibuat lama.
-            await sleep(randomMs(700, 1800));
+            await sleep(
+                randomMs(
+                    1000,
+                    3000
+                )
+            );
 
-            await sendReply(bot, chatId, 'AI Berevolusi kembali✅');
-        } catch (e) {
-            // Status failover tidak boleh mengganggu jawaban utama.
-            console.error('[FAILOVER NOTICE]', safeError(e));
+            /* ================================================
+               2. SERVER PENUH
+               ================================================ */
+
+            await sendReply(
+                bot,
+                chatId,
+                'Server penuh, tunggu sebentar...'
+            );
+
+            /*
+             * Thinking delay.
+             */
+
+            await sleep(
+                randomMs(
+                    700,
+                    1800
+                )
+            );
+
+            /* ================================================
+               3. AI BEREVOLUSI
+               ================================================ */
+
+            await sendReply(
+                bot,
+                chatId,
+                'AI Berevolusi kembali✅'
+            );
+        } catch (error) {
+            /*
+             * Error API tidak pernah dikirim
+             * mentah ke Telegram.
+             */
+
+            console.error(
+                '[FAILOVER NOTICE]',
+                safeError(error)
+            );
         } finally {
             failoverInFlight.delete(key);
         }
     })();
 
-    failoverInFlight.set(key, job);
+    failoverInFlight.set(
+        key,
+        job
+    );
+
     return job;
 }
 
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+/* ============================================================
+   TELEGRAM BOT
+   ============================================================ */
 
-bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', safeError(err)));
-bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', safeError(err)));
+const bot =
+    new TelegramBot(
+        TELEGRAM_BOT_TOKEN,
+        {
+            polling: true
+        }
+    );
+
+bot.on(
+    'polling_error',
+    (err) => {
+        console.error(
+            '[TELEGRAM POLLING ERROR]',
+            safeError(err)
+        );
+    }
+);
+
+bot.on(
+    'webhook_error',
+    (err) => {
+        console.error(
+            '[TELEGRAM WEBHOOK ERROR]',
+            safeError(err)
+        );
+    }
+);
+
+/* ============================================================
+   TYPING / PRESENCE
+   ============================================================ */
 
 function startRecordingPresence(chatId) {
     let stopped = false;
 
-    const sendPresence = async () => {
-        if (stopped) return;
-        try {
-            await bot.sendChatAction(chatId, 'record_voice');
-        } catch {}
+    const loop = async () => {
+        while (!stopped) {
+            try {
+                await bot.sendChatAction(
+                    chatId,
+                    'typing'
+                );
+            } catch {}
+
+            await sleep(4500);
+        }
     };
 
-    sendPresence();
-    const timer = setInterval(sendPresence, 4000);
+    loop();
 
     return () => {
         stopped = true;
-        clearInterval(timer);
     };
 }
 
-const START_BUTTON_POOL = [
-    { text: '🧠 Jelasin sesuatu', callback_data: 'ask|jelasin satu hal menarik hari ini' },
-    { text: '😂 Bikin aku ketawa', callback_data: 'ask|bikin aku ketawa dengan jokes singkat' },
-    { text: '💡 Fakta random', callback_data: 'ask|kasih satu fakta random yang menarik' },
-    { text: '⚽ Bahas bola', callback_data: 'ask|bahas sepak bola yang menarik' },
-    { text: '🎵 Rekomendasi musik', callback_data: 'ask|rekomendasikan musik berdasarkan mood' },
-    { text: '📱 Trik hp', callback_data: 'ask|kasih trik hp android yang berguna' },
-    { text: '💻 Tips coding', callback_data: 'ask|kasih tips coding yang praktis' },
-    { text: '🤖 Ngobrol ai', callback_data: 'ask|jelasin sesuatu yang menarik tentang ai' }
-];
-
-function randomStartButtons() {
-    return [...START_BUTTON_POOL].sort(() => Math.random() - 0.5).slice(0, 2);
-}
-
-bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
-    const text =
-        `<b>VGen AI Multifungsi</b> 😎\n\n` +
-        `Teman AI yang siap nemenin lu kapan aja.\n\n` +
-        `Provider aktif: <b>${escapeHTML(activeProvider || 'BELUM DIAKTIFKAN')}</b>\n` +
-        `Gemini punya failover otomatis antar model + akun.\n\n` +
-        `<b>Gas ngobrol 👇</b>`;
-
-    const keyboard = [
-        [
-            { text: '💎 AM Prem 1th', url: 'https://t.me/vickyyvall' },
-            { text: '🛒 Upgrade AI', callback_data: 'ask|info upgrade ai dan limit' }
-        ],
-        [
-            { text: '🎵 Tiktok @vickyyvall', url: 'https://www.tiktok.com/@vickyyvall' }
-        ],
-        [
-            { text: '📸 Instagram @vickyhx013_', url: 'https://www.instagram.com/vickyhx013_' }
-        ],
-        randomStartButtons()
-    ];
-
-    // 🟢 TARO LINK MEDIA LU DI SINI 🟢
-    // Ganti URL di bawah sama link gambar/GIF lu! (Contoh: https://link-gambar.com/foto.jpg)
-    const mediaUrl = 'https://ibb.co.com/6JW0kpT9';
-
-    try {
-        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
-        await bot.sendPhoto(msg.chat.id, mediaUrl, {
-            caption: text,
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: keyboard }
-        });
-    } catch (error) {
-        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
-        await sendReply(bot, msg.chat.id, text, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
-    }
-});
-bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
-    aiMutedChats.add(String(msg.chat.id));
-    userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.');
-});
-
-bot.onText(/^\/unmute(?:@\w+)?$/i, async (msg) => {
-    aiMutedChats.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.');
-});
-
-bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
-    userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.');
-});
-
-bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
-    const target = activeProvider === 'GEMINI' ? currentGeminiTarget() : null;
-
-    await sendReply(bot, msg.chat.id,
-        `Status VGen AI\n` +
-        `Provider: ${activeProvider || 'BELUM DISET'}\n` +
-        `Model: ${target?.model || (activeProvider === 'OPENAI' ? OPENAI_MODEL : 'BELUM DISET')}\n` +
-        `Akun: ${target?.email || (activeProvider === 'OPENAI' ? (secretConfig.openaiAccounts[0]?.email || '-') : '-')}\n` +
-        `Waktu WIB: ${nowWIB()}`
-    );
-});
-
-async function downloadTelegramFile(fileId) {
-    try {
-        const file = await bot.getFile(fileId);
-        if (!file.file_path) return null;
-
-        const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-        const res = await fetch(url);
-
-        if (!res.ok) throw new Error(`Download Telegram gagal (${res.status})`);
-
-        const buffer = Buffer.from(await res.arrayBuffer());
-        return { buffer, filePath: file.file_path };
-    } catch (e) {
-        console.error('[MEDIA DOWNLOAD]', safeError(e));
-        return null;
-    }
-}
+/* ============================================================
+   MEDIA
+   ============================================================ */
 
 function getMediaFromMessage(msg) {
+    if (!msg) {
+        return null;
+    }
+
     if (msg.photo?.length) {
+        const photo =
+            msg.photo[
+                msg.photo.length - 1
+            ];
+
         return {
-            fileId: msg.photo[msg.photo.length - 1].file_id,
-            mediaType: 'image',
-            mimeType: 'image/jpeg',
-            fileName: 'telegram-photo.jpg'
+            type: 'photo',
+            fileId: photo.file_id
         };
     }
 
     if (msg.document) {
         return {
-            fileId: msg.document.file_id,
-            mediaType: 'document',
-            mimeType: msg.document.mime_type || 'application/octet-stream',
-            fileName: msg.document.file_name || 'document'
+            type: 'document',
+            fileId:
+                msg.document.file_id,
+
+            mimeType:
+                msg.document.mime_type ||
+                'application/octet-stream',
+
+            fileName:
+                msg.document.file_name ||
+                'file'
+        };
+    }
+
+    if (msg.video) {
+        return {
+            type: 'video',
+            fileId:
+                msg.video.file_id,
+
+            mimeType:
+                msg.video.mime_type ||
+                'video/mp4'
+        };
+    }
+
+    if (msg.audio) {
+        return {
+            type: 'audio',
+            fileId:
+                msg.audio.file_id,
+
+            mimeType:
+                msg.audio.mime_type ||
+                'audio/mpeg'
         };
     }
 
     return null;
 }
 
-async function buildMediaPrompt(msg, basePrompt) {
-    const media = getMediaFromMessage(msg);
+/* ============================================================
+   TELEGRAM FILE -> BASE64
+   ============================================================ */
 
-    if (!media) {
-        return { finalPrompt: basePrompt, base64Media: null, mimeTypeMedia: null };
+async function downloadTelegramFile(
+    fileId
+) {
+    const file =
+        await bot.getFile(fileId);
+
+    if (!file?.file_path) {
+        throw new Error(
+            'Telegram file path tidak ditemukan.'
+        );
     }
 
-    const downloaded = await downloadTelegramFile(media.fileId);
+    const url =
+        `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-    if (!downloaded) {
+    const response =
+        await fetch(url);
+
+    if (!response.ok) {
+        throw new Error(
+            `Telegram file download failed: ${response.status}`
+        );
+    }
+
+    const buffer =
+        Buffer.from(
+            await response.arrayBuffer()
+        );
+
+    return {
+        buffer,
+        filePath:
+            file.file_path
+    };
+}
+
+/* ============================================================
+   MEDIA PROMPT BUILDER
+   ============================================================ */
+
+async function buildMediaPrompt(
+    msg,
+    text
+) {
+    const media =
+        getMediaFromMessage(msg);
+
+    if (!media) {
         return {
-            finalPrompt: `[Sistem: Lampiran Telegram tidak berhasil diunduh.]\n\n${basePrompt}`,
+            finalPrompt:
+                `${vgenPrompt}\n\n${text}`,
+
             base64Media: null,
+
             mimeTypeMedia: null
         };
     }
 
-    if (media.mediaType === 'document') {
-        const lower = media.fileName.toLowerCase();
-        const readable =
-            media.mimeType.includes('text') ||
-            media.mimeType.includes('json') ||
-            media.mimeType.includes('javascript') ||
-            /\.(js|json|txt|csv|html|css|py|md)$/i.test(lower);
+    try {
+        const downloaded =
+            await downloadTelegramFile(
+                media.fileId
+            );
 
-        if (readable) {
-            const text = downloaded.buffer.toString('utf8').slice(0, MAX_TEXT_FILE);
+        /*
+         * Batasi file teks / media yang terlalu besar.
+         */
+
+        if (
+            downloaded.buffer.length >
+            MAX_TEXT_FILE * 1024
+        ) {
+            console.warn(
+                '[MEDIA]',
+                'File terlalu besar, hanya metadata yang dipakai.'
+            );
 
             return {
                 finalPrompt:
-                    `[Sistem: Pengguna mengirim dokumen "${media.fileName}"]\n` +
-                    `Isi Dokumen:\n\`\`\`\n${text}\n\`\`\`\n\n` +
-                    `Pesan: ${basePrompt}`,
+                    `${vgenPrompt}\n\n` +
+                    `[Sistem: Pengguna mengirim ${media.type}. File terlalu besar untuk diproses penuh.]\n` +
+                    `${text}`,
+
                 base64Media: null,
+
                 mimeTypeMedia: null
             };
         }
 
-        return {
-            finalPrompt: `[Sistem: Pengguna mengirim lampiran dokumen "${media.fileName}".]\n\n${basePrompt}`,
-            base64Media: null,
-            mimeTypeMedia: media.mimeType
-        };
-    }
+        const base64 =
+            downloaded.buffer.toString(
+                'base64'
+            );
 
-    return {
-        finalPrompt: `[Sistem: Pengguna mengirim gambar. Analisa gambar tersebut.]\n\n${basePrompt}`,
-        base64Media: downloaded.buffer.toString('base64'),
-        mimeTypeMedia: 'image/jpeg'
-    };
-}
+        let mime =
+            media.mimeType ||
+            'application/octet-stream';
 
-async function askOpenAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
-    const account = secretConfig.openaiAccounts?.[0];
-
-    if (!account?.key) {
-        throw new Error('OpenAI belum memiliki API key server-side.');
-    }
-
-    let userContent = finalPrompt;
-
-    if (base64Media) {
-        userContent = [
-            { type: 'text', text: finalPrompt },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${mimeTypeMedia || 'image/jpeg'};base64,${base64Media}`
-                }
-            }
-        ];
-    }
-
-    const history = historyFor(chatId);
-    const messages = [
-        {
-            role: 'system',
-            content: typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt)
-        },
-        ...history,
-        { role: 'user', content: userContent }
-    ];
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${account.key}`
-        },
-        body: JSON.stringify({
-            model: OPENAI_MODEL,
-            messages
-        })
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || data.error) {
-        throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
-    }
-
-    return data.choices?.[0]?.message?.content || 'Model tidak mengembalikan jawaban.';
-}
-
-async function askGemini(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId) {
-    const history = historyFor(chatId);
-    const systemInstructionText =
-        typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt);
-
-    // Maksimal satu putaran penuh: Lite -> Flash -> 3.5 -> akun berikutnya.
-    // Jika seluruh putaran habis, ulangi lagi setelah jeda pendek.
-    const maxRounds = 3;
-    const totalTargets = secretConfig.geminiAccounts.length * GEMINI_MODELS.length;
-
-    for (let round = 0; round < maxRounds; round++) {
-        for (let attempt = 0; attempt < totalTargets; attempt++) {
-            const target = currentGeminiTarget();
-
-            const contents = history.map(h => ({
-                role: h.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: h.content }]
-            }));
-
-            const parts = [{ text: finalPrompt }];
-
-            if (base64Media) {
-                parts.push({
-                    inline_data: {
-                        mime_type: mimeTypeMedia || 'image/jpeg',
-                        data: base64Media
-                    }
-                });
-            }
-
-            contents.push({ role: 'user', parts });
-
-            const endpoint =
-                `https://generativelanguage.googleapis.com/v1beta/models/` +
-                `${encodeURIComponent(target.model)}:generateContent?key=${encodeURIComponent(target.key)}`;
-
-            let res;
-            let data;
-
-            try {
-                res = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        system_instruction: {
-                            parts: [{ text: systemInstructionText }]
-                        },
-                        contents
-                    })
-                });
-
-                data = await res.json();
-            } catch (networkError) {
-                // Gangguan jaringan bukan limit; coba target yang sama sekali lagi lewat
-                // perpindahan target agar bot tidak menggantung.
-                console.error('[GEMINI NETWORK]', safeError(networkError));
-                advanceGeminiTarget();
-                continue;
-            }
-
-            if (res.ok && !data.error) {
-                return data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') ||
-                    'Model tidak mengembalikan jawaban.';
-            }
-
-            if (isQuotaOrRateLimitError(res.status, data)) {
-                // Jangan kirim detail API/429 ke Telegram.
-                advanceGeminiTarget();
-
-                // Hanya tampilkan tiga pesan failover ketika benar-benar pindah
-                // karena kuota/rate-limit.
-                await sendFailoverSequence(chatId, sourceMessageId);
-                continue;
-            }
-
-            // 503: jangan bocorkan error mentah; pindah target setelah jeda singkat.
-            if (res.status === 503) {
-                await sleep(randomMs(500, 1200));
-                advanceGeminiTarget();
-                continue;
-            }
-
-            // Error konfigurasi/model tidak boleh masuk ke Telegram sebagai raw API error.
-            console.error(`[GEMINI ${res.status}]`, safeError(data));
-            throw new Error('Gemini sedang mengalami gangguan sementara.');
+        if (
+            !media.mimeType &&
+            media.type === 'photo'
+        ) {
+            mime = 'image/jpeg';
         }
 
-        await sleep(randomMs(1000, 2500));
-    }
+        return {
+            finalPrompt:
+                `${vgenPrompt}\n\n` +
+                `[Sistem: Pengguna mengirim ${media.type}.]\n` +
+                `${text}`,
 
-    throw new Error('Semua jalur Gemini sedang sibuk. Silakan kirim ulang sebentar lagi.');
-}
+            base64Media:
+                base64,
 
-async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId) {
-    if (!activeProvider) {
-        throw new Error('Provider AI belum diaktifkan.');
-    }
-
-    if (activeProvider === 'GEMINI') {
-        return askGemini(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId);
-    }
-
-    if (activeProvider === 'OPENAI') {
-        return askOpenAI(chatId, finalPrompt, base64Media, mimeTypeMedia);
-    }
-
-    throw new Error('Provider AI tidak dikenal.');
-}
-
-async function processAIMessage(msg, finalPrompt, base64Media, mimeTypeMedia) {
-    const chatId = String(msg.chat.id);
-
-    if (!activeProvider) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            '⚙️ Otak AI belum dipilih. Aktifkan Gemini atau GPT dari panel kontrol dulu.'
+            mimeTypeMedia:
+                mime
+        };
+    } catch (error) {
+        console.error(
+            '[MEDIA DOWNLOAD ERROR]',
+            safeError(error)
         );
-        return;
+
+        return {
+            finalPrompt:
+                `${vgenPrompt}\n\n` +
+                `[Sistem: Media pengguna tidak berhasil diambil. Jawab berdasarkan caption/teks jika tersedia.]\n` +
+                `${text}`,
+
+            base64Media: null,
+
+            mimeTypeMedia: null
+        };
+    }
+}
+
+/* ============================================================
+   GEMINI API
+   ============================================================ */
+
+async function askGemini(
+    chatId,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia,
+    sourceMessageId
+) {
+    /*
+     * LOOP SELAMANYA.
+     *
+     * Kalau:
+     *
+     * Lite habis
+     * -> Flash
+     *
+     * Flash habis
+     * -> 3.5 Flash
+     *
+     * 3.5 Flash habis
+     * -> email berikutnya + Lite
+     *
+     * email terakhir habis
+     * -> email pertama + Lite
+     */
+
+    while (true) {
+        const target =
+            currentGeminiTarget();
+
+        console.log(
+            `[GEMINI] ${target.email} / ${target.model}`
+        );
+
+        const url =
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+                target.model
+            )}:generateContent?key=${encodeURIComponent(
+                target.key
+            )}`;
+
+        const contents = [
+            {
+                role: 'user',
+                parts: [
+                    {
+                        text:
+                            finalPrompt
+                    }
+                ]
+            }
+        ];
+
+        /*
+         * Tambahkan media jika ada.
+         */
+
+        if (
+            base64Media &&
+            mimeTypeMedia
+        ) {
+            contents[0].parts.push({
+                inline_data: {
+                    mime_type:
+                        mimeTypeMedia,
+
+                    data:
+                        base64Media
+                }
+            });
+        }
+
+        let response;
+
+        try {
+            response =
+                await fetch(
+                    url,
+                    {
+                        method: 'POST',
+
+                        headers: {
+                            'Content-Type':
+                                'application/json'
+                        },
+
+                        body:
+                            JSON.stringify({
+                                contents
+                            })
+                    }
+                );
+        } catch (error) {
+            /*
+             * Network error:
+             * jangan kirim error mentah.
+             */
+
+            console.error(
+                '[GEMINI NETWORK ERROR]',
+                safeError(error)
+            );
+
+            advanceGeminiTarget();
+
+            await sleep(
+                randomMs(
+                    700,
+                    1500
+                )
+            );
+
+            continue;
+        }
+
+        let data = null;
+
+        try {
+            data =
+                await response.json();
+        } catch {
+            data = null;
+        }
+
+        /* ====================================================
+           SUCCESS
+           ==================================================== */
+
+        if (response.ok) {
+            const text =
+                data?.candidates?.[0]
+                    ?.content
+                    ?.parts
+                    ?.map(
+                        part =>
+                            part?.text || ''
+                    )
+                    .join('')
+                    .trim();
+
+            if (text) {
+                return text;
+            }
+
+            /*
+             * Response kosong:
+             * pindah target daripada membuat user
+             * menerima error API.
+             */
+
+            console.warn(
+                '[GEMINI EMPTY RESPONSE]',
+                target.model
+            );
+
+            advanceGeminiTarget();
+
+            await sleep(
+                randomMs(
+                    500,
+                    1200
+                )
+            );
+
+            continue;
+        }
+
+        /* ====================================================
+           QUOTA / RATE LIMIT
+           ==================================================== */
+
+        if (
+            isQuotaOrRateLimitError(
+                response.status,
+                data
+            )
+        ) {
+            console.warn(
+                `[GEMINI QUOTA] ${target.email} / ${target.model}`
+            );
+
+            /*
+             * Pindah model / akun TERLEBIH DAHULU.
+             */
+
+            advanceGeminiTarget();
+
+            /*
+             * Kirim sequence ke Telegram.
+             *
+             * Sequence hanya berisi:
+             *
+             * ⏳Loading
+             * Server penuh, tunggu sebentar...
+             * AI Berevolusi kembali✅
+             */
+
+            await sendFailoverSequence(
+                chatId,
+                sourceMessageId
+            );
+
+            /*
+             * PENTING:
+             * continue membuat pesan user yang sama
+             * dicoba kembali ke target baru.
+             */
+
+            continue;
+        }
+
+        /* ====================================================
+           SERVER OVERLOAD
+           ==================================================== */
+
+        if (
+            response.status === 503
+        ) {
+            console.warn(
+                `[GEMINI 503] ${target.model}`
+            );
+
+            advanceGeminiTarget();
+
+            await sleep(
+                randomMs(
+                    500,
+                    1200
+                )
+            );
+
+            continue;
+        }
+
+        /* ====================================================
+           ERROR LAIN
+           ==================================================== */
+
+        console.error(
+            `[GEMINI ${response.status}]`,
+            safeError(data)
+        );
+
+        /*
+         * Error mentah TIDAK PERNAH dikirim ke Telegram.
+         *
+         * Tetap pindah target supaya bot tidak berhenti.
+         */
+
+        advanceGeminiTarget();
+
+        await sleep(
+            randomMs(
+                500,
+                1200
+            )
+        );
+    }
+}
+
+/* ============================================================
+   OPENAI
+   ============================================================ */
+
+async function askOpenAI(
+    chatId,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia
+) {
+    const accounts =
+        Array.isArray(
+            secretConfig.openaiAccounts
+        )
+            ? secretConfig.openaiAccounts
+            : [];
+
+    if (!accounts.length) {
+        throw new Error(
+            'OpenAI belum diaktifkan dari HTML.'
+        );
     }
 
-    const stopRecordingPresence = startRecordingPresence(chatId);
+    /*
+     * OpenAI menggunakan akun pertama yang tersedia.
+     * Gemini memiliki failover model/account seperti
+     * yang diminta.
+     */
+
+    const account =
+        accounts[0];
+
+    const content = [];
+
+    content.push({
+        type: 'text',
+        text: finalPrompt
+    });
+
+    if (
+        base64Media &&
+        mimeTypeMedia &&
+        mimeTypeMedia.startsWith(
+            'image/'
+        )
+    ) {
+        content.push({
+            type: 'image_url',
+
+            image_url: {
+                url:
+                    `data:${mimeTypeMedia};base64,${base64Media}`
+            }
+        });
+    }
+
+    const response =
+        await fetch(
+            'https://api.openai.com/v1/responses',
+            {
+                method: 'POST',
+
+                headers: {
+                    'Content-Type':
+                        'application/json',
+
+                    Authorization:
+                        `Bearer ${account.key}`
+                },
+
+                body:
+                    JSON.stringify({
+                        model:
+                            OPENAI_MODEL,
+
+                        input: [
+                            {
+                                role:
+                                    'user',
+
+                                content
+                            }
+                        ]
+                    })
+            }
+        );
+
+    let data = null;
 
     try {
-        const response = await askAI(
+        data =
+            await response.json();
+    } catch {
+        data = null;
+    }
+
+    if (!response.ok) {
+        console.error(
+            `[OPENAI ${response.status}]`,
+            safeError(data)
+        );
+
+        throw new Error(
+            'OpenAI request failed.'
+        );
+    }
+
+    /*
+     * Responses API output.
+     */
+
+    let outputText =
+        data?.output_text;
+
+    if (
+        !outputText &&
+        Array.isArray(data?.output)
+    ) {
+        outputText =
+            data.output
+                .flatMap(
+                    item =>
+                        Array.isArray(
+                            item?.content
+                        )
+                            ? item.content
+                            : []
+                )
+                .map(
+                    part =>
+                        part?.text || ''
+                )
+                .join('');
+    }
+
+    return cleanText(
+        outputText
+    );
+}
+
+/* ============================================================
+   AI ROUTER
+   ============================================================ */
+
+async function askAI(
+    chatId,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia,
+    sourceMessageId
+) {
+    if (!activeProvider) {
+        throw new Error(
+            'Provider AI belum diaktifkan.'
+        );
+    }
+
+    if (
+        activeProvider ===
+        'GEMINI'
+    ) {
+        return askGemini(
             chatId,
             finalPrompt,
             base64Media,
             mimeTypeMedia,
-            msg.message_id
+            sourceMessageId
+        );
+    }
+
+    if (
+        activeProvider ===
+        'OPENAI'
+    ) {
+        return askOpenAI(
+            chatId,
+            finalPrompt,
+            base64Media,
+            mimeTypeMedia
+        );
+    }
+
+    throw new Error(
+        'Provider AI tidak dikenal.'
+    );
+}
+
+/* ============================================================
+   PROCESS AI MESSAGE
+   ============================================================ */
+
+async function processAIMessage(
+    msg,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia
+) {
+    const chatId =
+        String(msg.chat.id);
+
+    /*
+     * Kalau belum ada provider:
+     * jangan kirim pesan konfigurasi ke Telegram.
+     */
+
+    if (!activeProvider) {
+        return;
+    }
+
+    const stopRecordingPresence =
+        startRecordingPresence(
+            chatId
         );
 
-        const rawResponse = cleanText(response) || '😭 AI nggak menghasilkan jawaban kali ini.';
+    try {
+        const response =
+            await askAI(
+                chatId,
+                finalPrompt,
+                base64Media,
+                mimeTypeMedia,
+                msg.message_id
+            );
 
-        pushHistory(chatId, 'user', finalPrompt);
-        pushHistory(chatId, 'assistant', rawResponse);
+        const rawResponse =
+            cleanText(response) ||
+            '😭 AI nggak menghasilkan jawaban kali ini.';
 
-        await sendReply(bot, msg.chat.id, rawResponse, {
-            reply_to_message_id: msg.message_id
-        });
+        pushHistory(
+            chatId,
+            'user',
+            finalPrompt
+        );
+
+        pushHistory(
+            chatId,
+            'assistant',
+            rawResponse
+        );
+
+        /*
+         * Jawaban final tetap reply ke pesan user.
+         */
+
+        await sendReply(
+            bot,
+            msg.chat.id,
+            rawResponse,
+            {
+                reply_to_message_id:
+                    msg.message_id
+            }
+        );
     } catch (error) {
-        console.error('[AI CORE ERROR]', safeError(error));
+        console.error(
+            '[AI CORE ERROR]',
+            safeError(error)
+        );
 
-        // Tidak pernah mengirim detail error API/token/limit ke Telegram.
+        /*
+         * Detail error API / token / quota
+         * TIDAK PERNAH dikirim ke Telegram.
+         */
+
         await sendReply(
             bot,
             msg.chat.id,
             '😵 Server AI lagi penuh sebentar. Coba kirim lagi ya.',
-            { reply_to_message_id: msg.message_id }
+            {
+                reply_to_message_id:
+                    msg.message_id
+            }
         );
     } finally {
         stopRecordingPresence();
     }
 }
 
-bot.on('callback_query', async (query) => {
-    const data = String(query.data || '');
-    const chatId = String(query.message?.chat?.id || '');
+/* ============================================================
+   CALLBACK BUTTON
+   ============================================================ */
 
-    try {
-        await bot.answerCallbackQuery(query.id);
+bot.on(
+    'callback_query',
+    async (query) => {
+        const data =
+            String(
+                query.data || ''
+            );
 
-        if (!chatId || !data.startsWith('ask|')) return;
+        const chatId =
+            String(
+                query.message
+                    ?.chat
+                    ?.id || ''
+            );
 
-        const action = data.slice(4).trim();
-        if (!action) return;
+        try {
+            await bot.answerCallbackQuery(
+                query.id
+            );
 
-        const finalPrompt =
-            `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
-            `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
-            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
-            `Permintaan pengguna dari tombol:\n${action}`;
+            if (
+                !chatId ||
+                !data.startsWith(
+                    'ask|'
+                )
+            ) {
+                return;
+            }
 
-        await processAIMessage(
-            query.message,
-            finalPrompt,
-            null,
-            null
-        );
-    } catch (error) {
-        console.error('[CALLBACK ERROR]', safeError(error));
-        if (chatId) {
+            const action =
+                data
+                    .slice(4)
+                    .trim();
+
+            if (!action) {
+                return;
+            }
+
+            const finalPrompt =
+                `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
+                `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
+                `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
+                `Permintaan pengguna dari tombol:\n${action}`;
+
+            await processAIMessage(
+                query.message,
+                finalPrompt,
+                null,
+                null
+            );
+        } catch (error) {
+            console.error(
+                '[CALLBACK ERROR]',
+                safeError(error)
+            );
+
+            if (chatId) {
+                try {
+                    await sendReply(
+                        bot,
+                        chatId,
+                        '😵 Server AI lagi penuh sebentar. Coba lagi.'
+                    );
+                } catch {}
+            }
+        }
+    }
+);
+
+/* ============================================================
+   TELEGRAM MESSAGE
+   ============================================================ */
+
+bot.on(
+    'message',
+    async (msg) => {
+        const text =
+            cleanText(
+                msg.text ||
+                msg.caption ||
+                ''
+            );
+
+        if (
+            !text &&
+            !getMediaFromMessage(msg)
+        ) {
+            return;
+        }
+
+        if (isCommand(text)) {
+            return;
+        }
+
+        const chatId =
+            String(msg.chat.id);
+
+        if (
+            aiMutedChats.has(
+                chatId
+            )
+        ) {
+            return;
+        }
+
+        /*
+         * Abaikan pesan Telegram yang terlalu lama.
+         */
+
+        if (
+            msg.date &&
+            Math.floor(
+                Date.now() / 1000
+            ) -
+                msg.date >
+                120
+        ) {
+            return;
+        }
+
+        try {
+            const mediaResult =
+                await buildMediaPrompt(
+                    msg,
+                    text ||
+                        '[Sistem: Pengguna mengirim media tanpa caption.]'
+                );
+
+            const currentTimeInstruction =
+                `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
+
+            const finalPrompt =
+                `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
+
+            await processAIMessage(
+                msg,
+                finalPrompt,
+                mediaResult.base64Media,
+                mediaResult.mimeTypeMedia
+            );
+        } catch (error) {
+            console.error(
+                '[MESSAGE ERROR]',
+                safeError(error)
+            );
+
             try {
-                await sendReply(bot, chatId, '😵 Server AI lagi penuh sebentar. Coba lagi.');
+                await sendReply(
+                    bot,
+                    msg.chat.id,
+                    '😵 Server AI lagi penuh sebentar. Coba kirim lagi ya.',
+                    {
+                        reply_to_message_id:
+                            msg.message_id
+                    }
+                );
             } catch {}
         }
     }
-});
+);
 
-bot.on('message', async (msg) => {
-    const text = cleanText(msg.text || msg.caption || '');
+/* ============================================================
+   EXPRESS SERVER
+   ============================================================ */
 
-    if (!text && !getMediaFromMessage(msg)) return;
-    if (isCommand(text)) return;
+const app =
+    express();
 
-    const chatId = String(msg.chat.id);
-
-    if (aiMutedChats.has(chatId)) return;
-    if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
-
-    try {
-        const mediaResult = await buildMediaPrompt(
-            msg,
-            text || '[Sistem: Pengguna mengirim media tanpa caption.]'
-        );
-
-        const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-        const finalPrompt =
-            `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
-
-        await processAIMessage(
-            msg,
-            finalPrompt,
-            mediaResult.base64Media,
-            mediaResult.mimeTypeMedia
-        );
-    } catch (error) {
-        console.error('[MESSAGE ERROR]', safeError(error));
-        try {
-            await sendReply(bot, msg.chat.id, '😵 Server AI lagi penuh sebentar. Coba kirim lagi ya.', {
-                reply_to_message_id: msg.message_id
-            });
-        } catch {}
-    }
-});
-
-const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
 
-// Public config hanya berisi email + model. API key TIDAK PERNAH dikirim ke browser.
-app.get('/public-config', (req, res) => {
-    res.json({
-        ok: true,
-        provider: activeProvider,
-        gemini: {
-            accounts: secretConfig.geminiAccounts.map(a => ({ email: a.email })),
-            models: [...GEMINI_MODELS],
-            currentAccountIndex: geminiAccountIndex,
-            currentModelIndex: geminiModelIndex
-        },
-        openai: {
-            accounts: (secretConfig.openaiAccounts || []).map(a => ({ email: a.email })),
-            model: OPENAI_MODEL
+app.use(
+    express.json({
+        limit: '2mb'
+    })
+);
+
+/* ============================================================
+   PUBLIC CONFIG
+   API KEY TIDAK PERNAH DIKEMBALIKAN.
+   ============================================================ */
+
+app.get(
+    '/public-config',
+    (req, res) => {
+        res.json({
+            ok: true,
+
+            provider:
+                activeProvider,
+
+            gemini: {
+                accounts:
+                    (
+                        secretConfig
+                            .geminiAccounts ||
+                        []
+                    ).map(
+                        a => ({
+                            email:
+                                a.email
+                        })
+                    ),
+
+                models:
+                    [
+                        ...GEMINI_MODELS
+                    ],
+
+                currentAccountIndex:
+                    geminiAccountIndex,
+
+                currentModelIndex:
+                    geminiModelIndex
+            },
+
+            openai: {
+                accounts:
+                    (
+                        secretConfig
+                            .openaiAccounts ||
+                        []
+                    ).map(
+                        a => ({
+                            email:
+                                a.email
+                        })
+                    ),
+
+                model:
+                    OPENAI_MODEL
+            }
+        });
+    }
+);
+
+/* ============================================================
+   ACTIVATE PROVIDER
+   HTML -> LOCAL NODE
+   ============================================================ */
+
+app.post(
+    '/activate-provider',
+    (req, res) => {
+        const provider =
+            String(
+                req.body
+                    ?.provider ||
+                    ''
+            ).toUpperCase();
+
+        if (
+            ![
+                'GEMINI',
+                'OPENAI'
+            ].includes(
+                provider
+            )
+        ) {
+            return res
+                .status(400)
+                .json({
+                    ok: false,
+                    error:
+                        'Provider tidak valid.'
+                });
         }
-    });
-});
 
-// Aktivasi provider dari panel HTML.
-// Setelah sekali dipilih, state tersimpan dan otomatis aktif lagi setelah restart.
-app.post('/activate-provider', (req, res) => {
-    const provider = String(req.body?.provider || '').toUpperCase();
+        const incomingGemini =
+            Array.isArray(
+                req.body
+                    ?.geminiAccounts
+            )
+                ? req.body.geminiAccounts
+                : [];
 
-    if (!['GEMINI', 'OPENAI'].includes(provider)) {
-        return res.status(400).json({ ok: false, error: 'Provider tidak valid.' });
+        const incomingOpenAI =
+            Array.isArray(
+                req.body
+                    ?.openaiAccounts
+            )
+                ? req.body.openaiAccounts
+                : [];
+
+        /*
+         * Normalisasi email + key.
+         */
+
+        const normalize =
+            (arr) =>
+                arr
+                    .map(
+                        item => ({
+                            email:
+                                String(
+                                    item
+                                        ?.email ||
+                                    ''
+                                ).trim(),
+
+                            key:
+                                String(
+                                    item
+                                        ?.key ||
+                                    ''
+                                ).trim()
+                        })
+                    )
+                    .filter(
+                        item =>
+                            item.email &&
+                            item.key
+                    );
+
+        /* ====================================================
+           GEMINI
+           ==================================================== */
+
+        if (
+            provider ===
+            'GEMINI'
+        ) {
+            const accounts =
+                normalize(
+                    incomingGemini
+                );
+
+            if (
+                !accounts.length
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+
+                        error:
+                            'Gemini belum memiliki API key di HTML.'
+                    });
+            }
+
+            secretConfig
+                .geminiAccounts =
+                accounts;
+
+            /*
+             * Pertahankan posisi failover
+             * selama masih valid.
+             */
+
+            if (
+                geminiAccountIndex >=
+                accounts.length
+            ) {
+                geminiAccountIndex =
+                    0;
+            }
+
+            if (
+                geminiModelIndex >=
+                GEMINI_MODELS.length
+            ) {
+                geminiModelIndex =
+                    0;
+            }
+        }
+
+        /* ====================================================
+           OPENAI
+           ==================================================== */
+
+        if (
+            provider ===
+            'OPENAI'
+        ) {
+            const accounts =
+                normalize(
+                    incomingOpenAI
+                );
+
+            if (
+                !accounts.length
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+
+                        error:
+                            'OpenAI belum memiliki API key di HTML.'
+                    });
+            }
+
+            secretConfig
+                .openaiAccounts =
+                accounts;
+        }
+
+        activeProvider =
+            provider;
+
+        saveDb();
+
+        const target =
+            provider ===
+            'GEMINI'
+                ? currentGeminiTarget()
+                : null;
+
+        res.json({
+            ok: true,
+
+            provider:
+                activeProvider,
+
+            model:
+                target?.model ||
+                OPENAI_MODEL,
+
+            account:
+                target?.email ||
+                secretConfig
+                    .openaiAccounts[0]
+                    ?.email ||
+                null
+        });
     }
+);
 
-    if (provider === 'GEMINI' && !secretConfig.geminiAccounts?.length) {
-        return res.status(500).json({ ok: false, error: 'Gemini server-side config kosong.' });
+/* ============================================================
+   BACKWARD COMPATIBILITY
+   ============================================================
+
+   Endpoint lama tetap ada supaya HTML lama tidak langsung
+   meledak.
+
+   TAPI:
+   endpoint ini TIDAK menerima standalone API key.
+   ============================================================ */
+
+app.post(
+    '/deploy-key',
+    (req, res) => {
+        const provider =
+            String(
+                req.body
+                    ?.provider ||
+                    ''
+            ).toUpperCase();
+
+        if (
+            ![
+                'GEMINI',
+                'OPENAI'
+            ].includes(
+                provider
+            )
+        ) {
+            return res
+                .status(400)
+                .json({
+                    ok: false,
+
+                    error:
+                        'Provider tidak valid.'
+                });
+        }
+
+        const accounts =
+            provider ===
+            'GEMINI'
+                ? secretConfig
+                    .geminiAccounts
+                : secretConfig
+                    .openaiAccounts;
+
+        if (
+            !accounts?.length
+        ) {
+            return res
+                .status(400)
+                .json({
+                    ok: false,
+
+                    error:
+                        'Aktifkan provider dari HTML terlebih dahulu.'
+                });
+        }
+
+        activeProvider =
+            provider;
+
+        saveDb();
+
+        res.json({
+            ok: true,
+
+            provider:
+                activeProvider,
+
+            model:
+                provider ===
+                'GEMINI'
+                    ? GEMINI_MODELS[
+                        geminiModelIndex
+                    ]
+                    : OPENAI_MODEL
+        });
     }
+);
 
-    if (provider === 'OPENAI' && !secretConfig.openaiAccounts?.[0]?.key) {
-        return res.status(500).json({ ok: false, error: 'OpenAI server-side config kosong.' });
+/* ============================================================
+   ROOT STATUS
+   ============================================================ */
+
+app.get(
+    '/',
+    (req, res) => {
+        let target = null;
+
+        if (
+            activeProvider ===
+            'GEMINI' &&
+            secretConfig
+                .geminiAccounts
+                .length
+        ) {
+            target =
+                currentGeminiTarget();
+        }
+
+        res.json({
+            ok: true,
+
+            service:
+                'VGen AI Telegram Bot',
+
+            provider:
+                activeProvider,
+
+            model:
+                target?.model ||
+                (
+                    activeProvider ===
+                    'OPENAI'
+                        ? OPENAI_MODEL
+                        : null
+                ),
+
+            timeWIB:
+                nowWIB()
+        });
     }
+);
 
-    activeProvider = provider;
-    saveDb();
+/* ============================================================
+   START SERVER
+   ============================================================ */
 
-    res.json({
-        ok: true,
-        provider: activeProvider,
-        model: provider === 'GEMINI'
-            ? GEMINI_MODELS[geminiModelIndex]
-            : OPENAI_MODEL
-    });
-});
+app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+        console.log(
+            `✅ VGEN AI TELEGRAM ONLINE di port ${PORT}`
+        );
 
-// Kompatibilitas dengan panel lama: API key dari browser sengaja diabaikan.
-app.post('/deploy-key', (req, res) => {
-    const provider = String(req.body?.provider || '').toUpperCase();
+        console.log(
+            `🤖 Provider saat startup: ${
+                activeProvider ||
+                'BELUM DIAKTIFKAN'
+            }`
+        );
 
-    if (!['GEMINI', 'OPENAI'].includes(provider)) {
-        return res.status(400).json({ ok: false, error: 'Provider tidak valid.' });
+        if (
+            activeProvider ===
+                'GEMINI' &&
+            secretConfig
+                .geminiAccounts
+                .length
+        ) {
+            const t =
+                currentGeminiTarget();
+
+            console.log(
+                `🔄 Gemini failover siap: ${t.email} / ${t.model}`
+            );
+        } else {
+            console.log(
+                '🟦 Menunggu aktivasi provider dari HTML localhost.'
+            );
+        }
     }
-
-    activeProvider = provider;
-    saveDb();
-
-    res.json({
-        success: true,
-        provider: activeProvider,
-        message: 'Provider aktif. API key tetap disimpan server-side.'
-    });
-});
-
-app.get('/', (req, res) => {
-    const target = activeProvider === 'GEMINI' ? currentGeminiTarget() : null;
-
-    res.json({
-        ok: true,
-        service: 'VGen AI Telegram Bot',
-        provider: activeProvider,
-        model: target?.model || (activeProvider === 'OPENAI' ? OPENAI_MODEL : null),
-        timeWIB: nowWIB()
-    });
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ VGEN AI TELEGRAM ONLINE di port ${PORT}`);
-    console.log(`🤖 Provider saat startup: ${activeProvider || 'BELUM DIAKTIFKAN'}`);
-    if (activeProvider === 'GEMINI') {
-        const t = currentGeminiTarget();
-        console.log(`🔄 Gemini failover: ${t.email} / ${t.model}`);
-    }
-});
+);
