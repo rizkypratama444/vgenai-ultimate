@@ -188,7 +188,7 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         // FIX BUTTON LANGSUNG MUNCUL DI ATAS UNTUK BOCAH
         [
             { text: '💎AM Prem 1th', url: 'https://t.me/vickyyvall' },
-            { text: '🛒 Upgrade AI', callback_data: 'ask|Keanggotaan: Saya mau Upgrade AI biar limit harian jadi 50/hari. Tolong jelaskan manfaatnya, sistem limit, dan harganya (25K).' }
+            { text: '🛒 Upgrade AI', callback_data: 'ask|info upgrade ai dan limit' }
         ],
         [
             { text: '🎵 Tiktok @vickyyvall', url: 'https://www.tiktok.com/@vickyyvall' }
@@ -538,8 +538,12 @@ bot.on('message', async (msg) => {
                         const callbackData = String(original.callback_data || '').trim();
 
                         if (!text) continue;
-                        if (callbackData && callbackData.startsWith('ask|') && Buffer.byteLength(callbackData, 'utf8') <= 64) {
-                            validButtons.push({ text, callback_data: callbackData });
+                        if (callbackData && callbackData.startsWith('ask|')) {
+                            let safeCallback = callbackData;
+                            if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
+                                safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
+                            }
+                            validButtons.push({ text, callback_data: safeCallback });
                             continue;
                         }
                         if (url && /^https?:\/\/\S+$/i.test(url)) {
