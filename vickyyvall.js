@@ -117,6 +117,33 @@ async function sendReply(bot, chatId, text, extra = {}) {
 }
 
 // ============================================================
+// LONG-RUNNING TELEGRAM "RECORDING" PRESENCE
+// Telegram bot actions are transient, so refresh record_voice while
+// the model/server is still processing. Stop ONLY after AI finishes.
+// ============================================================
+function startRecordingPresence(chatId) {
+    let stopped = false;
+
+    const sendPresence = async () => {
+        if (stopped) return;
+        try {
+            await bot.sendChatAction(chatId, 'record_voice');
+        } catch (e) {
+            console.error('[RECORD PRESENCE]', e.message);
+        }
+    };
+
+    // Send immediately, then refresh before Telegram's short action TTL expires.
+    sendPresence();
+    const timer = setInterval(sendPresence, 4000);
+
+    return () => {
+        stopped = true;
+        clearInterval(timer);
+    };
+}
+
+// ============================================================
 // TELEGRAM BOT
 // ============================================================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
@@ -502,12 +529,30 @@ bot.on('callback_query', async (query) => {
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
             `Permintaan pengguna dari tombol:\n${action}`;
 
-        const response = await askAI(
+        // Telegram Bot API tidak mengizinkan bot mengirim pesan sebagai akun user.
+        // Jadi tombol tidak bisa "memalsukan" pesan user. Sebagai gantinya, kirim
+        // echo yang jelas agar aksi tombol tetap terlihat di chat, lalu proses AI.
+        await sendReply(
+            bot,
             chatId,
-            finalPrompt,
-            null,
-            null
+            `<i>Lu memilih:</i> ${action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
+            { reply_to_message_id: query.message?.message_id }
         );
+
+        const stopRecordingPresence = startRecordingPresence(chatId);
+
+        let response;
+        try {
+            response = await askAI(
+                chatId,
+                finalPrompt,
+                null,
+                null
+            );
+        } finally {
+            // Recording presence stays active until the AI request actually settles.
+            stopRecordingPresence();
+        }
 
         let rawResponse = cleanText(response);
 
@@ -588,13 +633,20 @@ bot.on('message', async (msg) => {
     if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
 
     try {
-        await bot.sendChatAction(msg.chat.id, 'record_voice');
+        const stopRecordingPresence = startRecordingPresence(chatId);
 
-        const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
-        const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB. Jika pengguna bertanya waktu saat ini, gunakan waktu ini.]`;
-        const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
+        let response;
+        try {
+            const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
+            const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB. Jika pengguna bertanya waktu saat ini, gunakan waktu ini.]`;
+            const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
 
-        const response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
+            response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
+        } finally {
+            // Do not remove the recording indicator before the server/model request settles.
+            stopRecordingPresence();
+        }
+
         let rawResponse = cleanText(response);
 
         // Cek lagi setelah AI selesai supaya mute yang baru diberikan tidak menghasilkan balasan.
@@ -716,15 +768,17 @@ if (match) {
 
             const roll = Math.random();
 
-            // 35% = tidak ada tombol
-            // 35% = satu tombol
-            // 30% = dua tombol
+            // Default UI lebih sering menampilkan tombol:
+            // 10% = tidak ada tombol
+            // 45% = satu tombol
+            // 45% = dua tombol.
+            // Prompt tetap mengatur agar topik sangat serius dapat memilih 0 tombol.
 
-            if (roll < 0.35) {
+            if (roll < 0.10) {
 
                 inline_keyboard = [];
 
-            } else if (roll < 0.70) {
+            } else if (roll < 0.55) {
 
                 const randomButton =
                     validButtons[
