@@ -331,11 +331,24 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         randomStartButtons()
     ];
 
-    await sendReply(bot, msg.chat.id, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
-});
+    // 🟢 TARO LINK MEDIA LU DI SINI 🟢
+    // Ganti URL di bawah sama link gambar/GIF lu! (Contoh: https://link-gambar.com/foto.jpg)
+    const mediaUrl = 'https://ibb.co.com/6JW0kpT9';
 
+    try {
+        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
+        await bot.sendPhoto(msg.chat.id, mediaUrl, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
+        await sendReply(bot, msg.chat.id, text, {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
+});
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
     userHistory.delete(String(msg.chat.id));
