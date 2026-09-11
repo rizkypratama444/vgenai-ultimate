@@ -1,3 +1,9 @@
+/**
+ * VGEN AI - TELEGRAM BOT EDITION
+ * Menggantikan engine WhatsApp/Baileys dengan Telegram Bot API.
+ * Node.js 22+.
+ */
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -11,6 +17,9 @@ try {
     vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
 }
 
+// ============================================================
+// KONFIGURASI
+// ============================================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI_SINI';
 const PORT = process.env.PORT || 8080;
 const MAX_HISTORY = 15;
@@ -21,6 +30,9 @@ if (TELEGRAM_BOT_TOKEN === 'PASTE_BOT_TOKEN_DI_SINI') {
     process.exit(1);
 }
 
+// ============================================================
+// DATABASE API CONFIG
+// ============================================================
 const dbFile = path.join(__dirname, 'database.json');
 let db = { apiConfig: {} };
 
@@ -41,6 +53,7 @@ let activeApiKey = db.apiConfig?.apiKey || null;
 let activeModel = db.apiConfig?.model || null;
 let activeBaseUrl = db.apiConfig?.baseUrl || null;
 
+// Memori per chat Telegram.
 const userHistory = new Map();
 const aiMutedChats = new Set();
 
@@ -94,6 +107,9 @@ async function sendReply(bot, chatId, text, extra = {}) {
     }
 }
 
+// ============================================================
+// LONG-RUNNING TELEGRAM "RECORDING" PRESENCE
+// ============================================================
 function startRecordingPresence(chatId) {
     let stopped = false;
     const sendPresence = async () => {
@@ -110,11 +126,19 @@ function startRecordingPresence(chatId) {
     };
 }
 
+// ============================================================
+// TELEGRAM BOT
+// ============================================================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
 bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', err.message));
 bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', err.message));
 
+// ============================================================
+// PREMIUM START MENU
+// ============================================================
+
+// (Cari ide keren & bahas game udah diapus dari sini karena ditaruh fix di atas)
 const START_BUTTON_POOL = [
     { text: '🧠 Jelasin sesuatu', callback_data: 'ask|jelasin satu hal menarik hari ini' },
     { text: '😂 Bikin aku ketawa', callback_data: 'ask|bikin aku ketawa dengan jokes singkat' },
@@ -149,6 +173,7 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         `<b>Temukan juga vgen ai di sini 👇</b>`;
 
     const keyboard = [
+        // FIX BUTTON LANGSUNG MUNCUL DI ATAS UNTUK BOCAH
         [
             { text: '💎AM Prem 1th', url: 'https://t.me/vickyyvall' },
             { text: '🛒 Upgrade AI', callback_data: 'ask|Keanggotaan: Saya mau Upgrade AI biar limit harian jadi 50/hari. Tolong jelaskan manfaatnya, sistem limit, dan harganya (25K).' }
@@ -165,6 +190,9 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         randomStartButtons()
     ];
 
+    // CARA GAMPANG PAKE GAMBAR TANPA FOLDER ASSET:
+    // Taro link gambar online lu di dalem tanda kutip di bawah ini!
+    // Contoh: 'https://i.imgur.com/xxxxx.png' 
     const START_IMAGE_URL = ''; 
 
     if (START_IMAGE_URL) {
@@ -177,13 +205,16 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
             return;
         } catch (e) {
             console.error('[GAMBAR START ERROR]', e.message);
+            // Kalau gambarnya gagal (link rusak/kosong), otomatis kirim teks aja
         }
     }
 
+    // Fallback teks doang
     await sendReply(bot, msg.chat.id, text, {
         reply_markup: { inline_keyboard: keyboard }
     });
 });
+
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
@@ -365,6 +396,9 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
     throw new Error(`Provider tidak dikenal: ${activeProvider}`);
 }
 
+// ============================================================
+// CALLBACK BUTTON ENGINE
+// ============================================================
 bot.on('callback_query', async (query) => {
     const data = String(query.data || '');
     const chatId = String(query.message?.chat?.id || '');
@@ -382,6 +416,7 @@ bot.on('callback_query', async (query) => {
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
             `Permintaan pengguna dari tombol:\n${action}`;
 
+        // FIX "your selected"
         await sendReply(
             bot,
             chatId,
@@ -399,6 +434,7 @@ bot.on('callback_query', async (query) => {
 
         let rawResponse = cleanText(response);
 
+        // FIX BUG GAMBAR: NANGKAP TAG GAMBAR DARI AI BIAR GA JADI TEXT HTTPS
         let imageToSent = null;
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
@@ -407,6 +443,7 @@ bot.on('callback_query', async (query) => {
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
 
+        // HAPUS BUTTONS DARI CALLBACK (Gak boleh bikin button di dalem callback)
         const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
         rawResponse = rawResponse.replace(buttonRegex, '').trim();
 
@@ -415,6 +452,7 @@ bot.on('callback_query', async (query) => {
         pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', rawResponse);
 
+        // KIRIM FOTO DULU KALAU ADA, BARU TEXT
         let extraOptions = { reply_to_message_id: query.message?.message_id };
         if (imageToSent) {
             try {
@@ -460,6 +498,7 @@ bot.on('message', async (msg) => {
         let rawResponse = cleanText(response);
         if (aiMutedChats.has(chatId)) return;
 
+        // FIX BUG GAMBAR: NANGKAP TAG GAMBAR DARI AI BIAR GA JADI TEXT HTTPS
         let imageToSent = null;
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
@@ -468,6 +507,9 @@ bot.on('message', async (msg) => {
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
 
+        // ==========================================================
+        // 🔥 VGEN CORE: DYNAMIC AI BUTTON PARSER 🔥
+        // ==========================================================
         let inline_keyboard = [];
         const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
         const match = rawResponse.match(buttonRegex);
@@ -530,6 +572,7 @@ bot.on('message', async (msg) => {
             extraOptions.reply_markup = { inline_keyboard };
         }
 
+        // KIRIM FOTO DULU KALAU ADA TAG GAMBAR
         if (imageToSent) {
             try {
                 await bot.sendPhoto(chatId, imageToSent);
@@ -538,6 +581,7 @@ bot.on('message', async (msg) => {
             }
         }
 
+        // BARU KIRIM BALASAN TEKS / TOMBOL
         await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
 
     } catch (error) {
@@ -547,6 +591,9 @@ bot.on('message', async (msg) => {
     }
 });
 
+// ============================================================
+// EXPRESS DEPLOYMENT API
+// ============================================================
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
