@@ -23,14 +23,11 @@ process.on('unhandledRejection', (reason) => {
 
 let vgenPrompt = '';
 try {
-    vgenPrompt = require('./prompt_2.js');
+    vgenPrompt = require('./prompt.js');
 } catch (e) {
-    try {
-        vgenPrompt = require('./prompt.js');
-    } catch {
-        vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
-    }
+    vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
 }
+
 
 // ============================================================
 // KONFIGURASI
