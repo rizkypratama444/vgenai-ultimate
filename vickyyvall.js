@@ -110,17 +110,33 @@ function convertMarkdownToHTML(text) {
     // Ubah *teks* menjadi <b>teks</b> jika AI lupa pake HTML
     formatted = formatted.replace(/\*([^*]+)\*/g, '<b>$1</b>');
 
-    // Ubah ```kode``` menjadi <pre><code>kode</code></pre>
-    formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+    // 1. TANGKAP GELEMBUNG COPY (CODE BLOCK 3 BACKTICK)
+    formatted = formatted.replace(/```([\s\S]*?)```/g, (match, codeBlock) => {
+        // Hapus nama bahasa (misal 'html' atau 'python' di baris pertama)
+        let cleanCode = codeBlock.replace(/^[a-z]+\n/i, '');
+        // ESCAPE HTML! Ini kunci biar Telegram ga error dan gelembungnya muncul
+        let safeCode = cleanCode
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        return `<pre><code>${safeCode}</code></pre>`;
+    });
 
-    // Ubah `kode` menjadi <code>kode</code>
-    formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 2. TANGKAP GELEMBUNG KECIL (INLINE CODE 1 BACKTICK)
+    formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
+        let safeCode = code
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        return `<code>${safeCode}</code>`;
+    });
 
     // Rapikan bullet point liar
     formatted = formatted.replace(/[\uFFFD]/g, '•');
 
     return formatted;
 }
+
 
 function splitForTelegram(text, max = 4000) {
     const out = [];
