@@ -10,6 +10,18 @@ const fs = require('fs');
 const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 
+// ============================================================
+// FIX RAILWAY CRASH (ANTI LOG SPAM)
+// Mencegah Node.js memuntahkan object TCP/Tunnel raksasa ke console
+// ============================================================
+process.on('uncaughtException', (err) => {
+    console.error('[UNCAUGHT EXCEPTION]', err ? (err.message || err) : 'Unknown Error');
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[UNHANDLED REJECTION]', reason ? (reason.message || reason) : 'Unknown Rejection');
+});
+
 let vgenPrompt = '';
 try {
     vgenPrompt = require('./prompt.js');
@@ -131,8 +143,8 @@ function startRecordingPresence(chatId) {
 // ============================================================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', err.message));
-bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', err.message));
+bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', err ? (err.message || err.code || 'Unknown Error') : 'Unknown'));
+bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', err ? (err.message || err.code || 'Unknown Error') : 'Unknown'));
 
 // ============================================================
 // PREMIUM START MENU
