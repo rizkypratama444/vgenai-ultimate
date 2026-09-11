@@ -351,15 +351,62 @@ bot.on('message', async (msg) => {
         const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
 
         const response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
-        const rawResponse = cleanText(response);
+        let rawResponse = cleanText(response);
 
         // Cek lagi setelah AI selesai supaya mute yang baru diberikan tidak menghasilkan balasan.
         if (aiMutedChats.has(chatId)) return;
 
+        // ==========================================================
+        // 🔥 VGEN CORE: DYNAMIC AI BUTTON PARSER 🔥
+        // ==========================================================
+        let inline_keyboard = [];
+        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/i;
+        const match = rawResponse.match(buttonRegex);
+        
+        if (match) {
+            try {
+                // AI ngasih JSON, kita parse!
+                const aiButtons = JSON.parse(match[1]);
+                let currentRow = [];
+                
+                aiButtons.forEach((btn, index) => {
+                    // MUTLAK: Paksa parameter text jadi huruf kecil semua kalo arahnya ke t.me/vickyyvall
+                    if (btn.url && btn.url.includes('t.me/vickyyvall')) {
+                        btn.url = btn.url.replace(/(text=)([^&]+)/i, (m, p1, p2) => p1 + p2.toLowerCase());
+                    }
+                    // Validasi: pastikan button punya url atau callback_data, kalau gaada kasih dummy
+                    if (!btn.url && !btn.callback_data) {
+                        btn.callback_data = "dummy_action";
+                    }
+
+                    currentRow.push(btn);
+                    
+                    // Bikin layout rapi: 1 baris maksimal 2 button
+                    if (currentRow.length === 2 || index === aiButtons.length - 1) {
+                        inline_keyboard.push(currentRow);
+                        currentRow = [];
+                    }
+                });
+                
+                // Hapus kode tag [BUTTONS: ...] dari pesan yang mau dikirim biar bersih!
+                rawResponse = rawResponse.replace(buttonRegex, '').trim();
+            } catch (e) {
+                console.error("[AI BUTTON PARSER ERROR] AI ngirim format JSON gak valid:", e.message);
+                // Kalo AI salah nulis JSON, button di skip, chat normal tetep jalan
+            }
+        }
+
+        // Push ke memori riwayat TANPA tag rahasia
         pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', rawResponse);
 
-        await sendReply(bot, msg.chat.id, rawResponse, { reply_to_message_id: msg.message_id });
+        let extraOptions = { reply_to_message_id: msg.message_id };
+        if (inline_keyboard.length > 0) {
+            extraOptions.reply_markup = { inline_keyboard };
+        }
+        // ==========================================================
+
+        await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
     } catch (error) {
         const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
         console.error('[AI CORE ERROR]', realError);
@@ -411,5 +458,5 @@ app.post('/deploy-key', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ VGEN AI TELEGRAM ONLINE di port ${PORT}`);
-    console.log(`🤖 Bot siap menerima pesan Telegram`);
+    console.log(`🤖 AI siap menerima pesan Telegram`);
 });
