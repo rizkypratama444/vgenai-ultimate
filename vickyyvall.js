@@ -517,22 +517,17 @@ function advanceGeminiTarget() {
    QUOTA / RATE LIMIT DETECTION
    ============================================================ */
 
-function isQuotaOrRateLimitError(
-    status,
-    data
-) {
-    const code =
-        String(
-            data?.error?.status ||
-            data?.error?.code ||
-            ''
-        ).toUpperCase();
+function isQuotaOrRateLimitError(status, data) {
+    const code = String(
+        data?.error?.status ||
+        data?.error?.code ||
+        ''
+    ).toUpperCase();
 
-    const msg =
-        String(
-            data?.error?.message ||
-            ''
-        ).toLowerCase();
+    const msg = String(
+        data?.error?.message ||
+        ''
+    ).toLowerCase();
 
     if (status === 429) {
         return true;
@@ -540,28 +535,18 @@ function isQuotaOrRateLimitError(
 
     if (
         status === 403 &&
-        /(quota|rate.?limit|resource.?exhausted|exceeded|permission)/i.test(
-            msg
-        )
+        /(quota|rate.?limit|resource.?exhausted|exceeded|permission)/i.test(msg)
     ) {
         return true;
     }
 
     if (
-        code.includes(
-            'RESOURCE_EXHAUSTED'
-        )
+        code.includes('RESOURCE_EXHAUSTED')
     ) {
         return true;
     }
 
-    return /(
-        quota|
-        rate.?limit|
-        resource.?exhausted|
-        too many requests|
-        exceeded
-    )/i.test(msg);
+    return /(quota|rate.?limit|resource.?exhausted|too many requests|exceeded)/i.test(msg);
 }
 
 /* ============================================================
