@@ -103,7 +103,16 @@ function splitForTelegram(text, max = 4000) {
 
 async function sendReply(bot, chatId, text, extra = {}) {
     for (const chunk of splitForTelegram(text)) {
-        await bot.sendMessage(chatId, chunk, extra);
+
+        await bot.sendMessage(
+            chatId,
+            chunk,
+            {
+                parse_mode: 'HTML',
+                ...extra
+            }
+        );
+
     }
 }
 
@@ -120,15 +129,150 @@ bot.on('webhook_error', (err) => {
     console.error('[TELEGRAM WEBHOOK ERROR]', err.message);
 });
 
+// ============================================================
+// PREMIUM START MENU
+// ============================================================
+
+const START_BUTTON_POOL = [
+    {
+        text: '🧠 Jelasin sesuatu',
+        callback_data: 'ask|jelasin satu hal menarik hari ini'
+    },
+    {
+        text: '🔥 Cari ide keren',
+        callback_data: 'ask|kasih aku ide yang seru dan unik'
+    },
+    {
+        text: '😂 Bikin aku ketawa',
+        callback_data: 'ask|bikin aku ketawa dengan jokes singkat'
+    },
+    {
+        text: '💡 Fakta random',
+        callback_data: 'ask|kasih satu fakta random yang menarik'
+    },
+    {
+        text: '🎮 Bahas game',
+        callback_data: 'ask|bahas game yang seru'
+    },
+    {
+        text: '⚽ Bahas bola',
+        callback_data: 'ask|bahas sepak bola yang menarik'
+    },
+    {
+        text: '🎵 Rekomendasi musik',
+        callback_data: 'ask|rekomendasikan musik berdasarkan mood'
+    },
+    {
+        text: '📱 Trik hp',
+        callback_data: 'ask|kasih trik hp android yang berguna'
+    },
+    {
+        text: '💻 Tips coding',
+        callback_data: 'ask|kasih tips coding yang praktis'
+    },
+    {
+        text: '🤖 Ngobrol ai',
+        callback_data: 'ask|jelasin sesuatu yang menarik tentang ai'
+    },
+    {
+        text: '🌍 Fakta dunia',
+        callback_data: 'ask|kasih fakta unik tentang dunia'
+    },
+    {
+        text: '🧪 Sains simpel',
+        callback_data: 'ask|jelasin satu fakta sains dengan bahasa gampang'
+    },
+    {
+        text: '🧩 Teka-teki',
+        callback_data: 'ask|kasih aku teka-teki singkat'
+    },
+    {
+        text: '📝 Bantu nulis',
+        callback_data: 'ask|kasih ide tulisan yang menarik'
+    },
+    {
+        text: '💰 Tips hemat',
+        callback_data: 'ask|kasih tips hemat yang realistis'
+    },
+    {
+        text: '🎯 Jadi produktif',
+        callback_data: 'ask|kasih cara simpel supaya lebih produktif'
+    },
+    {
+        text: '📚 Belajar cepat',
+        callback_data: 'ask|ajarin aku satu hal berguna'
+    },
+    {
+        text: '🌌 Fakta luar angkasa',
+        callback_data: 'ask|kasih fakta luar angkasa yang bikin wow'
+    },
+    {
+        text: '🍜 Ide makanan',
+        callback_data: 'ask|rekomendasikan makanan simpel yang enak'
+    },
+    {
+        text: '🎲 Pilihkan aku',
+        callback_data: 'ask|pilihkan topik random yang seru'
+    }
+];
+
+function randomStartButtons() {
+
+    return [...START_BUTTON_POOL]
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 2);
+
+}
+
 bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
-    const text = `VGen AI Telegram Bot aktif.\n\n` +
-        `Kirim pertanyaan langsung untuk mulai ngobrol.\n` +
-        `/mute - matikan respon AI di chat ini\n` +
-        `/unmute - aktifkan lagi\n` +
-        `/reset - hapus memori percakapan chat ini\n` +
-        `/status - cek provider dan model`;
-    await sendReply(bot, msg.chat.id, text);
+
+    const text =
+        `<b>Vgen ai</b> ✨\n\n` +
+        `Teman ai yang siap nemenin lu kapan aja. 😎\n\n` +
+        `Mau ngobrol, cari ide, belajar, coding, bahas bola, ` +
+        `atau sekadar random juga gas.\n\n` +
+        `<b>Temukan juga vgen ai di sini 👇</b>`;
+
+    const keyboard = [
+
+        [
+            {
+                text: '🎵 Tiktok @vickyyvall',
+                url: 'https://www.tiktok.com/@vickyyvall'
+            }
+        ],
+
+        [
+            {
+                text: '🎮 Roblox @aa_vickyyy',
+                url: 'https://www.roblox.com/id/users/8881321052/profile'
+            }
+        ],
+
+        [
+            {
+                text: '📸 Instagram @vickyhx013_',
+                url: 'https://www.instagram.com/vickyhx013_'
+            }
+        ],
+
+        randomStartButtons()
+
+    ];
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        text,
+        {
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        }
+    );
+
 });
+
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
@@ -325,6 +469,106 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
     throw new Error(`Provider tidak dikenal: ${activeProvider}`);
 }
 
+// ============================================================
+// CALLBACK BUTTON ENGINE
+// ============================================================
+
+bot.on('callback_query', async (query) => {
+
+    const data = String(query.data || '');
+    const chatId = String(query.message?.chat?.id || '');
+
+    try {
+
+        await bot.answerCallbackQuery(query.id);
+
+        if (!chatId) return;
+
+        // Tombol AI harus menggunakan format:
+        // ask|pertanyaan
+        if (!data.startsWith('ask|')) return;
+
+        const action = data.slice(4).trim();
+
+        if (!action) return;
+
+        console.log(
+            `[BUTTON CLICK] chat=${chatId} action=${action}`
+        );
+
+        const finalPrompt =
+            `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
+            `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
+            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
+            `Permintaan pengguna dari tombol:\n${action}`;
+
+        const response = await askAI(
+            chatId,
+            finalPrompt,
+            null,
+            null
+        );
+
+        let rawResponse = cleanText(response);
+
+        // Jangan biarkan AI membuat tombol baru dari callback.
+        const buttonRegex =
+            /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+
+        rawResponse = rawResponse
+            .replace(buttonRegex, '')
+            .trim();
+
+        if (!rawResponse) {
+            rawResponse = '😭 AI nggak menghasilkan jawaban kali ini.';
+        }
+
+        // Simpan ke memory
+        pushHistory(
+            chatId,
+            'user',
+            finalPrompt
+        );
+
+        pushHistory(
+            chatId,
+            'assistant',
+            rawResponse
+        );
+
+        await sendReply(
+            bot,
+            chatId,
+            rawResponse,
+            {
+                reply_to_message_id:
+                    query.message?.message_id
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            '[BUTTON CALLBACK ERROR]',
+            error.message
+        );
+
+        if (chatId) {
+
+            try {
+
+                await sendReply(
+                    bot,
+                    chatId,
+                    '😭 Waduh tombolnya kepencet tapi AI lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'
+                );
+
+            } catch {}
+
+        }
+    }
+});
+
 bot.on('message', async (msg) => {
     // Command ditangani oleh handler di atas.
     const text = cleanText(msg.text || msg.caption || '');
@@ -360,42 +604,175 @@ bot.on('message', async (msg) => {
         // 🔥 VGEN CORE: DYNAMIC AI BUTTON PARSER 🔥
         // ==========================================================
         let inline_keyboard = [];
-        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/i;
-        const match = rawResponse.match(buttonRegex);
-        
-        if (match) {
-            try {
-                // AI ngasih JSON, kita parse!
-                const aiButtons = JSON.parse(match[1]);
-                let currentRow = [];
-                
-                aiButtons.forEach((btn, index) => {
-                    // MUTLAK: Paksa parameter text jadi huruf kecil semua kalo arahnya ke t.me/vickyyvall
-                    if (btn.url && btn.url.includes('t.me/vickyyvall')) {
-                        btn.url = btn.url.replace(/(text=)([^&]+)/i, (m, p1, p2) => p1 + p2.toLowerCase());
-                    }
-                    // Validasi: pastikan button punya url atau callback_data, kalau gaada kasih dummy
-                    if (!btn.url && !btn.callback_data) {
-                        btn.callback_data = "dummy_action";
+
+const buttonRegex =
+    /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+
+const match = rawResponse.match(buttonRegex);
+
+if (match) {
+
+    try {
+
+        const aiButtons = JSON.parse(match[1]);
+
+        const validButtons = [];
+
+        if (Array.isArray(aiButtons)) {
+
+            for (const original of aiButtons) {
+
+                if (!original || typeof original !== 'object') {
+                    continue;
+                }
+
+                const text =
+                    String(original.text || '').trim();
+
+                const url =
+                    String(original.url || '').trim();
+
+                const callbackData =
+                    String(original.callback_data || '').trim();
+
+                if (!text) continue;
+
+                // ==========================================
+                // CALLBACK BUTTON
+                // ==========================================
+
+                if (
+                    callbackData &&
+                    callbackData.startsWith('ask|') &&
+                    Buffer.byteLength(callbackData, 'utf8') <= 64
+                ) {
+
+                    validButtons.push({
+                        text,
+                        callback_data: callbackData
+                    });
+
+                    continue;
+                }
+
+                // ==========================================
+                // URL BUTTON
+                // ==========================================
+
+                if (
+                    url &&
+                    /^https?:\/\/\S+$/i.test(url)
+                ) {
+
+                    let finalUrl = url;
+
+                    // URL Telegram Vickyy:
+                    // parameter text harus lowercase
+                    if (
+                        finalUrl.includes(
+                            't.me/vickyyvall'
+                        )
+                    ) {
+
+                        finalUrl =
+                            finalUrl.replace(
+                                /(text=)([^&]+)/i,
+                                (full, prefix, value) => {
+
+                                    let decoded = value;
+
+                                    try {
+                                        decoded =
+                                            decodeURIComponent(value);
+                                    } catch {}
+
+                                    return (
+                                        prefix +
+                                        encodeURIComponent(
+                                            decoded.toLowerCase()
+                                        )
+                                    );
+                                }
+                            );
                     }
 
-                    currentRow.push(btn);
-                    
-                    // Bikin layout rapi: 1 baris maksimal 2 button
-                    if (currentRow.length === 2 || index === aiButtons.length - 1) {
-                        inline_keyboard.push(currentRow);
-                        currentRow = [];
-                    }
-                });
-                
-                // Hapus kode tag [BUTTONS: ...] dari pesan yang mau dikirim biar bersih!
-                rawResponse = rawResponse.replace(buttonRegex, '').trim();
-            } catch (e) {
-                console.error("[AI BUTTON PARSER ERROR] AI ngirim format JSON gak valid:", e.message);
-                // Kalo AI salah nulis JSON, button di skip, chat normal tetep jalan
+                    validButtons.push({
+                        text,
+                        url: finalUrl
+                    });
+                }
+
+                if (validButtons.length >= 2) {
+                    break;
+                }
             }
         }
 
+        // ==========================================
+        // RANDOM: 0 / 1 / 2 BUTTON
+        // ==========================================
+
+        if (validButtons.length > 0) {
+
+            const roll = Math.random();
+
+            // 35% = tidak ada tombol
+            // 35% = satu tombol
+            // 30% = dua tombol
+
+            if (roll < 0.35) {
+
+                inline_keyboard = [];
+
+            } else if (roll < 0.70) {
+
+                const randomButton =
+                    validButtons[
+                        Math.floor(
+                            Math.random() *
+                            validButtons.length
+                        )
+                    ];
+
+                inline_keyboard = [
+                    [randomButton]
+                ];
+
+            } else {
+
+                inline_keyboard = [
+                    validButtons
+                        .sort(
+                            () => Math.random() - 0.5
+                        )
+                        .slice(0, 2)
+                ];
+            }
+        }
+
+        // HAPUS TAG RAHASIA DARI PESAN
+        rawResponse =
+            rawResponse
+                .replace(buttonRegex, '')
+                .trim();
+
+    } catch (error) {
+
+        console.error(
+            '[BUTTON PARSER ERROR]',
+            error.message
+        );
+
+        // Kalau JSON button rusak,
+        // jangan kirim tag mentah ke user.
+        rawResponse =
+            rawResponse
+                .replace(buttonRegex, '')
+                .trim();
+
+        inline_keyboard = [];
+    }
+}
         // Push ke memori riwayat TANPA tag rahasia
         pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', rawResponse);
