@@ -92,14 +92,13 @@ function cleanText(value) {
 function normalizeChatOutput(value) {
     let text = String(value || '');
 
-    // Buang artefak tag mesin/kurung penutup yang bocor ke gelembung chat.
+    // Sapu bersih artefak tag & kurung siku bocor
+    text = text.replace(/\[\/?BUTTONS\]/gi, '');
     text = text.replace(/^\s*\]\s*$/gm, '');
     text = text.replace(/(^|\n)\s*\]\s*(?=\n|$)/g, '$1');
-    text = text.replace(/\[\/BUTTONS\]\s*$/i, '');
+    text = text.replace(/\]\s*$/g, '');
     text = text.replace(/\n{3,}/g, '\n\n').trim();
 
-    // Gaya kapital VGen: awal bait kapital, tetapi setelah titik/koma di bait yang sama
-    // tidak dipaksa kapital. Nama/brand/judul penting tetap dibiarkan apa adanya.
     const paragraphs = text.split(/\n\n+/);
     const protectedList = ['Alight Motion Premium', 'AM Prem', 'TikTok', 'Instagram', 'Telegram', 'Persija', 'VGen AI', 'vickyyvall', 'JavaScript', 'Node.js', 'HTML', 'CSS', 'JSON', 'Python', 'Roblox', 'YouTube'];
 
@@ -107,7 +106,6 @@ function normalizeChatOutput(value) {
         let out = paragraph.trim();
         if (!out) return '';
 
-        // Lindungi nama/brand penting agar tidak ikut diturunkan setelah titik.
         const saved = [];
         out = out.replace(new RegExp(protectedList.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'), (match) => {
             const token = `__VGENPROTECT${saved.length}__`;
@@ -115,11 +113,7 @@ function normalizeChatOutput(value) {
             return token;
         });
 
-        // Setelah . ! ? di dalam bait, buat huruf berikutnya kecil secara natural.
-        // Kapital penuh seperti WKWK/HTML tetap tidak disentuh.
         out = out.replace(/([.!?])([ \t]+)([A-ZÀ-Ý])(?=[a-zà-ÿ])/g, (m, punct, space, ch) => punct + space + ch.toLowerCase());
-
-        // Awal bait wajib kapital jika berupa huruf biasa.
         out = out.replace(/^([a-zà-ÿ])/, (_, ch) => ch.toUpperCase());
 
         saved.forEach((word, index) => {
@@ -131,6 +125,7 @@ function normalizeChatOutput(value) {
     text = paragraphs.map(fixParagraph).filter(Boolean).join('\n\n');
     return text.trim();
 }
+
 
 function nowWIB() {
     return new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
@@ -483,6 +478,15 @@ function extractQuotedAttribute(header, key) {
     return match ? match[2] : '';
 }
 
+function safeCallbackData(data) {
+    let text = String(data || '').trim();
+    if (!text.startsWith('ask|')) text = 'ask|' + text;
+    let buf = Buffer.from(text, 'utf8');
+    if (buf.length <= 64) return text;
+    // Potong aman di bawah 64 byte tanpa merusak karakter UTF-8
+    return buf.subarray(0, 60).toString('utf8').replace(/\uFFFD/g, '');
+}
+
 function parseDynamicButtons(rawText) {
     const text = String(rawText || '');
     const start = text.search(/\[BUTTONS\s*:/i);
@@ -512,7 +516,7 @@ function parseDynamicButtons(rawText) {
     }
 
     if (end === -1) {
-        return { text: text.replace(/\[BUTTONS\s*:[\s\S]*$/i, '').trim(), buttons: [] };
+        return { text: text.replace(/\[BUTTONS\s*:[\s\S]*$/i, '').replace(/\]\s*$/, '').trim(), buttons: [] };
     }
 
     const payload = text.slice(start + opener.length, end - 1).trim();
@@ -529,12 +533,8 @@ function parseDynamicButtons(rawText) {
             const callbackData = String(original.callback_data || '').trim();
             if (!buttonText || /^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
 
-            if (callbackData.startsWith('ask|')) {
-                let safeCallback = callbackData;
-                while (Buffer.byteLength(safeCallback, 'utf8') > 64) {
-                    safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, Math.max(1, Buffer.byteLength(safeCallback, 'utf8') - 1)).toString('utf8');
-                }
-                validButtons.push({ text: buttonText, callback_data: safeCallback });
+            if (callbackData) {
+                validButtons.push({ text: buttonText, callback_data: safeCallbackData(callbackData) });
             } else if (url && /^https?:\/\/\S+$/i.test(url)) {
                 validButtons.push({ text: buttonText, url });
             }
@@ -542,16 +542,8 @@ function parseDynamicButtons(rawText) {
         }
     }
 
-    const cleanedText = (text.slice(0, start) + text.slice(end)).trim();
+    const cleanedText = (text.slice(0, start) + text.slice(end)).replace(/\]\s*$/, '').trim();
     return { text: cleanedText, buttons: validButtons.slice(0, 4) };
-}
-
-function randomButtonCount() {
-    // 1-3 paling sering; 4 hanya sesekali supaya tidak terasa template.
-    const roll = Math.random();
-    if (roll < 0.08) return 4;
-    if (roll < 0.38) return 2;
-    return 1 + Math.floor(Math.random() * 2);
 }
 
 function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
@@ -561,39 +553,33 @@ function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
     if (amTopic) {
         pool.push(
             { text: '💎 Order AM Prem', url: 'https://t.me/vickyyvall' },
-            { text: '✨ Fitur AM Prem', callback_data: 'ask|jelaskan fitur Alight Motion Premium secara singkat' },
-            { text: '🔥 Spill detailnya', callback_data: 'ask|jelaskan detail AM Prem dengan singkat dan jelas' }
+            { text: '✨ Fitur AM Prem', callback_data: safeCallbackData('ask|fitur am prem') },
+            { text: '🔥 Spill detail', callback_data: safeCallbackData('ask|detail am prem') }
         );
     } else if (/persija|persib|bola|sepak bola|liga/i.test(source)) {
         pool.push(
-            { text: '🏆 Bahas bolanya', callback_data: 'ask|lanjut bahas topik sepak bola yang tadi dengan seru' },
-            { text: '🔥 Spill detail', callback_data: 'ask|kasih detail menarik tentang topik tadi' },
-            { text: '😂 Versi ngakak', callback_data: 'ask|bahas topik tadi dengan gaya meme singkat' }
+            { text: '🏆 Bahas bola', callback_data: safeCallbackData('ask|bahas bola lagi') },
+            { text: '🔥 Spill detail', callback_data: safeCallbackData('ask|detail bola') },
+            { text: '😂 Versi ngakak', callback_data: safeCallbackData('ask|versi meme bola') }
         );
     } else if (/html|css|javascript|node\.js|script|coding|kode|program/i.test(source)) {
         pool.push(
-            { text: '🛠️ Revisi kode', callback_data: 'ask|beri revisi atau perbaikan dari kode/topik tadi' },
-            { text: '📦 Bikin ZIP', callback_data: 'ask|jadikan project tadi menjadi beberapa file yang saling terhubung dalam satu ZIP jika memang perlu' },
-            { text: '💡 Jelasin kodenya', callback_data: 'ask|jelaskan kode atau konsep tadi secara singkat dan gampang dipahami' }
-        );
-    } else if (/tiktok|instagram|youtube|link|url/i.test(source)) {
-        pool.push(
-            { text: '👀 Bahas lagi', callback_data: 'ask|lanjut bahas topik atau link tadi' },
-            { text: '😂 Spill lucunya', callback_data: 'ask|buat komentar meme singkat tentang topik tadi' },
-            { text: '🔥 Kasih versi lain', callback_data: 'ask|kasih versi alternatif yang lebih menarik dari topik tadi' }
+            { text: '🛠️ Revisi kode', callback_data: safeCallbackData('ask|revisi kode') },
+            { text: '📦 Bikin ZIP', callback_data: safeCallbackData('ask|buatkan zip project') },
+            { text: '💡 Jelasin kode', callback_data: safeCallbackData('ask|penjelasan kode singkat') }
         );
     } else {
         pool.push(
-            { text: '👀 Lanjut bahas', callback_data: 'ask|lanjutkan pembahasan tadi dengan natural' },
-            { text: '😂 Bikin ngakak', callback_data: 'ask|buat respons meme singkat yang masih nyambung dengan topik tadi' },
-            { text: '🔥 Kasih versi lain', callback_data: 'ask|kasih sudut pandang atau versi lain dari topik tadi' },
-            { text: '💡 Spill lagi', callback_data: 'ask|tambahkan satu hal menarik yang masih nyambung dengan topik tadi' }
+            { text: '👀 Lanjut bahas', callback_data: safeCallbackData('ask|lanjutkan topik') },
+            { text: '😂 Bikin ngakak', callback_data: safeCallbackData('ask|respon lucu singkat') },
+            { text: '🔥 Versi lain', callback_data: safeCallbackData('ask|sudut pandang lain') }
         );
     }
 
     const count = Math.min(randomButtonCount(), pool.length);
     return pool.sort(() => Math.random() - 0.5).slice(0, count);
 }
+
 
 async function ensureAIButtons(chatId, userText, aiText, existingButtons, amTopic = false) {
     if (existingButtons.length) return existingButtons.slice(0, 4);
