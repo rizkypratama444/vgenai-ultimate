@@ -36,8 +36,6 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI
 const PORT = process.env.PORT || 8080;
 const MAX_HISTORY = 15;
 const MAX_TEXT_FILE = 5000;
-const MAX_GENERATED_FILE_BYTES = 8 * 1024 * 1024;
-const MAX_GENERATED_ZIP_BYTES = 20 * 1024 * 1024;
 
 if (TELEGRAM_BOT_TOKEN === 'PASTE_BOT_TOKEN_DI_SINI') {
     console.error('❌ TELEGRAM_BOT_TOKEN belum diisi. Set environment variable TELEGRAM_BOT_TOKEN.');
@@ -86,24 +84,8 @@ function pushHistory(chatId, role, content) {
 }
 
 function cleanText(value) {
-    return normalizeChatOutput(String(value || ''));
+    return String(value || '').trim();
 }
-
-function normalizeChatOutput(value) {
-    let text = String(value || '');
-
-    // Sapu bersih artefak tag & kurung siku bocor
-    text = text.replace(/\[\/?BUTTONS\]/gi, '');
-    text = text.replace(/^\s*\]\s*$/gm, '');
-    text = text.replace(/(^|\n)\s*\]\s*(?=\n|$)/g, '$1');
-    text = text.replace(/\]\s*$/g, '');
-    
-    // Jangan ancurin enter/baris baru bawaan AI, cukup batesin max 2 enter beruntun
-    text = text.replace(/\n{3,}/g, '\n\n').trim();
-
-    return text;
-}
-
 
 function nowWIB() {
     return new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
@@ -239,35 +221,34 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
     const mediaUrl = 'https://ibb.co.com/s9tq563Y';
 
     try {
+        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
         await bot.sendPhoto(msg.chat.id, mediaUrl, {
             caption: text,
             parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: keyboard },
-            reply_to_message_id: msg.message_id
+            reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
+        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
         await sendReply(bot, msg.chat.id, text, {
-            reply_markup: { inline_keyboard: keyboard },
-            reply_to_message_id: msg.message_id
+            reply_markup: { inline_keyboard: keyboard }
         });
     }
-
 });
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.', { reply_to_message_id: msg.message_id });
+    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.');
 });
 
 bot.onText(/^\/unmute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.', { reply_to_message_id: msg.message_id });
+    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.');
 });
 
 bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.', { reply_to_message_id: msg.message_id });
+    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.');
 });
 
 bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
@@ -275,10 +256,9 @@ bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
         `Status VGen AI\n` +
         `Provider: ${activeProvider || 'BELUM DISET'}\n` +
         `Model: ${activeModel || 'BELUM DISET'}\n` +
-        `Waktu WIB: ${nowWIB()}`,
-        { reply_to_message_id: msg.message_id }
+        `Waktu WIB: ${nowWIB()}`
     );
-}); 
+});
 
 async function downloadTelegramFile(fileId) {
     try {
@@ -421,359 +401,6 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
 }
 
 // ============================================================
-// DYNAMIC OUTPUT ENGINE: BUTTONS + IMAGE + FILE + ZIP
-// ============================================================
-function extractTagBlock(text, tagName) {
-    const source = String(text || '');
-    const open = new RegExp(`\\[${tagName}\\s*:` , 'i');
-    const match = source.match(open);
-    if (!match) return null;
-
-    const start = match.index;
-    const openEnd = start + match[0].length;
-    const closeTag = `[/${tagName}]`;
-    const closeIndex = source.toLowerCase().indexOf(closeTag.toLowerCase(), openEnd);
-    if (closeIndex === -1) return null;
-
-    const header = source.slice(start, openEnd);
-    const body = source.slice(openEnd, closeIndex).trim();
-    const end = closeIndex + closeTag.length;
-    return { start, end, header, body, full: source.slice(start, end) };
-}
-
-function sanitizeGeneratedFilename(name, fallback = 'vgen-file.txt') {
-    let safe = String(name || fallback).trim();
-    safe = safe.replace(/[\\/\0<>:"|?*\x00-\x1F]/g, '_');
-    safe = safe.replace(/^\.+/, '').trim();
-    if (!safe) safe = fallback;
-    if (safe.length > 120) safe = safe.slice(0, 120);
-    return safe;
-}
-
-function extractQuotedAttribute(header, key) {
-    const re = new RegExp(`${key}\\s*=\\s*(["'])(.*?)\\1`, 'i');
-    const match = String(header || '').match(re);
-    return match ? match[2] : '';
-}
-
-function safeCallbackData(data) {
-    let text = String(data || '').trim();
-    if (!text.startsWith('ask|')) text = 'ask|' + text;
-    let buf = Buffer.from(text, 'utf8');
-    if (buf.length <= 64) return text;
-    // Potong aman di bawah 64 byte tanpa merusak karakter UTF-8
-    return buf.subarray(0, 60).toString('utf8').replace(/\uFFFD/g, '');
-}
-
-function parseDynamicButtons(rawText) {
-    const text = String(rawText || '');
-    const start = text.search(/\[BUTTONS\s*:/i);
-    if (start === -1) return { text, buttons: [] };
-
-    const opener = text.slice(start).match(/\[BUTTONS\s*:/i)[0];
-    let i = start + opener.length;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let end = -1;
-
-    for (; i < text.length; i++) {
-        const ch = text[i];
-        if (inString) {
-            if (escaped) escaped = false;
-            else if (ch === '\\') escaped = true;
-            else if (ch === '"') inString = false;
-            continue;
-        }
-        if (ch === '"') { inString = true; continue; }
-        if (ch === '[') depth++;
-        else if (ch === ']') {
-            depth--;
-            if (depth === 0) { end = i + 1; break; }
-        }
-    }
-
-    if (end === -1) {
-        return { text: text.replace(/\[BUTTONS\s*:[\s\S]*$/i, '').replace(/\]\s*$/, '').trim(), buttons: [] };
-    }
-
-    const payload = text.slice(start + opener.length, end - 1).trim();
-    let parsed = [];
-    try { parsed = JSON.parse(payload); }
-    catch (e) { console.error('[BUTTON PARSER ERROR]', e.message); }
-
-    const validButtons = [];
-    if (Array.isArray(parsed)) {
-        for (const original of parsed) {
-            if (!original || typeof original !== 'object') continue;
-            const buttonText = String(original.text || '').trim().replace(/\s+/g, ' ').slice(0, 48);
-            const url = String(original.url || '').trim();
-            const callbackData = String(original.callback_data || '').trim();
-            
-            if (!buttonText || /^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
-
-            if (callbackData) {
-                validButtons.push({ text: buttonText, callback_data: safeCallbackData(callbackData) });
-            } else if (url && /^https?:\/\/\S+$/i.test(url)) {
-                validButtons.push({ text: buttonText, url });
-            }
-            if (validButtons.length >= 4) break;
-        }
-    }
-
-    const cleanedText = (text.slice(0, start) + text.slice(end)).replace(/\]\s*$/, '').trim();
-    return { text: cleanedText, buttons: validButtons.slice(0, 4) };
-}
-
-function randomButtonCount() {
-    const roll = Math.random();
-    if (roll < 0.08) return 4;
-    if (roll < 0.38) return 2;
-    return 1 + Math.floor(Math.random() * 2);
-}
-
-function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
-    const source = `${userText || ''} ${aiText || ''}`.toLowerCase();
-    const pool = [];
-
-    if (amTopic) {
-        pool.push(
-            { text: '💎 Order AM Prem', url: 'https://t.me/vickyyvall' },
-            { text: '✨ Fitur AM Prem', callback_data: safeCallbackData('ask|fitur am prem') },
-            { text: '🔥 Spill detail', callback_data: safeCallbackData('ask|detail am prem') }
-        );
-    } else if (/persija|persib|bola|sepak bola|liga/i.test(source)) {
-        pool.push(
-            { text: '🏆 Bahas bola', callback_data: safeCallbackData('ask|bahas bola lagi') },
-            { text: '🔥 Spill detail', callback_data: safeCallbackData('ask|detail bola') },
-            { text: '😂 Versi ngakak', callback_data: safeCallbackData('ask|versi meme bola') }
-        );
-    } else if (/html|css|javascript|node\.js|script|coding|kode|program/i.test(source)) {
-        pool.push(
-            { text: '🛠️ Revisi kode', callback_data: safeCallbackData('ask|revisi kode') },
-            { text: '📦 Bikin ZIP', callback_data: safeCallbackData('ask|buatkan zip project') },
-            { text: '💡 Jelasin kode', callback_data: safeCallbackData('ask|penjelasan kode singkat') }
-        );
-    } else {
-        pool.push(
-            { text: '👀 Lanjut bahas', callback_data: safeCallbackData('ask|lanjutkan topik') },
-            { text: '😂 Bikin ngakak', callback_data: safeCallbackData('ask|respon lucu singkat') },
-            { text: '🔥 Versi lain', callback_data: safeCallbackData('ask|sudut pandang lain') }
-        );
-    }
-
-    const count = Math.min(randomButtonCount(), pool.length);
-    return pool.sort(() => Math.random() - 0.5).slice(0, count);
-}
-
-async function ensureAIButtons(chatId, userText, aiText, existingButtons, amTopic = false) {
-    if (existingButtons.length) return existingButtons.slice(0, 4);
-
-    // Minta model membuat tombol saja. Ini tetap AI-generated, bukan label statis.
-    try {
-        const buttonPrompt =
-            `[SISTEM INTERNAL: Buat rekomendasi tombol Telegram berdasarkan pesan pengguna dan jawaban AI di bawah. ` +
-            `Keluarkan HANYA satu tag [BUTTONS: ...], JSON valid, 1-4 tombol, jumlah dibuat natural dan tidak selalu 4. ` +
-            `Teks tombol pendek, lucu/santai bila cocok, emoji dipilih sendiri. ` +
-            `Gunakan callback_data ask|... untuk respons AI dan url hanya jika URL memang diberikan. ` +
-            `JANGAN gunakan label "Lanjut chat". Jangan keluarkan teks lain.]
-
-` +
-            `Pesan pengguna: ${userText || '-'}
-` +
-            `Jawaban AI: ${aiText || '-'}
-` +
-            (amTopic ? `Topik AM Prem: jika relevan, salah satu tombol harus bisa order ke https://t.me/vickyyvall.
-` : '');
-        const generated = await askAI(chatId, buttonPrompt, null, null);
-        const parsed = parseDynamicButtons(generated);
-        if (parsed.buttons.length) return parsed.buttons.slice(0, 4);
-    } catch (e) {
-        console.error('[AI BUTTON REPAIR]', e.message || e);
-    }
-
-    return buildFallbackButtons(userText, aiText, { amTopic });
-}
-
-function parseGeneratedFiles(rawText) {
-    let text = String(rawText || '');
-    const generated = [];
-
-    // ZIP projects first, so their nested [ZIP_FILE] blocks are consumed together.
-    let zipMatch;
-    while ((zipMatch = extractTagBlock(text, 'ZIP'))) {
-        const zipName = sanitizeGeneratedFilename(extractQuotedAttribute(zipMatch.header, 'filename'), 'vgen-project.zip');
-        const files = [];
-        const inner = zipMatch.body;
-        const fileRe = /\[ZIP_FILE\s*:\s*filename\s*=\s*(["'])(.*?)\1\]([\s\S]*?)\[\/ZIP_FILE\]/gi;
-        let m;
-        while ((m = fileRe.exec(inner)) !== null) {
-            const filename = sanitizeGeneratedFilename(m[2], 'file.txt');
-            const content = m[3].replace(/^\r?\n/, '').replace(/\r?\n$/, '');
-            const buffer = Buffer.from(content, 'utf8');
-            if (buffer.length > MAX_GENERATED_FILE_BYTES) continue;
-            files.push({ filename, buffer });
-        }
-        if (files.length > 0) {
-            const zipBuffer = createStoredZip(files);
-            if (zipBuffer.length <= MAX_GENERATED_ZIP_BYTES) {
-                generated.push({ type: 'zip', filename: zipName.endsWith('.zip') ? zipName : `${zipName}.zip`, buffer: zipBuffer });
-            }
-        }
-        text = (text.slice(0, zipMatch.start) + text.slice(zipMatch.end)).trim();
-    }
-
-    let fileMatch;
-    while ((fileMatch = extractTagBlock(text, 'FILE'))) {
-        const filename = sanitizeGeneratedFilename(extractQuotedAttribute(fileMatch.header, 'filename'), 'vgen-file.txt');
-        const content = fileMatch.body.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
-        const buffer = Buffer.from(content, 'utf8');
-        if (buffer.length <= MAX_GENERATED_FILE_BYTES) {
-            generated.push({ type: 'file', filename, buffer });
-        }
-        text = (text.slice(0, fileMatch.start) + text.slice(fileMatch.end)).trim();
-    }
-
-    return { text, files: generated };
-}
-
-// CRC-32 untuk ZIP sederhana tanpa dependency tambahan.
-const CRC32_TABLE = (() => {
-    const table = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-        let c = n;
-        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-        table[n] = c >>> 0;
-    }
-    return table;
-})();
-
-function crc32(buffer) {
-    let crc = 0xFFFFFFFF;
-    for (const byte of buffer) crc = CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
-    return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-function createStoredZip(files) {
-    const localParts = [];
-    const centralParts = [];
-    let offset = 0;
-
-    for (const file of files) {
-        const name = Buffer.from(file.filename.replace(/\\/g, '/'), 'utf8');
-        const data = file.buffer;
-        const crc = crc32(data);
-        const local = Buffer.alloc(30 + name.length);
-        local.writeUInt32LE(0x04034b50, 0);
-        local.writeUInt16LE(20, 4);
-        local.writeUInt16LE(0, 6);
-        local.writeUInt16LE(0, 8); // stored
-        local.writeUInt16LE(0, 10);
-        local.writeUInt16LE(0, 12);
-        local.writeUInt32LE(crc, 14);
-        local.writeUInt32LE(data.length, 18);
-        local.writeUInt32LE(data.length, 22);
-        local.writeUInt16LE(name.length, 26);
-        local.writeUInt16LE(0, 28);
-        name.copy(local, 30);
-        localParts.push(local, data);
-
-        const central = Buffer.alloc(46 + name.length);
-        central.writeUInt32LE(0x02014b50, 0);
-        central.writeUInt16LE(20, 4);
-        central.writeUInt16LE(20, 6);
-        central.writeUInt16LE(0, 8);
-        central.writeUInt16LE(0, 10);
-        central.writeUInt16LE(0, 12);
-        central.writeUInt16LE(0, 14);
-        central.writeUInt32LE(crc, 16);
-        central.writeUInt32LE(data.length, 20);
-        central.writeUInt32LE(data.length, 24);
-        central.writeUInt16LE(name.length, 28);
-        central.writeUInt16LE(0, 30);
-        central.writeUInt16LE(0, 32);
-        central.writeUInt16LE(0, 34);
-        central.writeUInt16LE(0, 36);
-        central.writeUInt32LE(0, 38);
-        central.writeUInt32LE(offset, 42);
-        name.copy(central, 46);
-        centralParts.push(central);
-
-        offset += local.length + data.length;
-    }
-
-    const centralSize = centralParts.reduce((n, b) => n + b.length, 0);
-    const centralOffset = offset;
-    const end = Buffer.alloc(22);
-    end.writeUInt32LE(0x06054b50, 0);
-    end.writeUInt16LE(0, 4);
-    end.writeUInt16LE(0, 6);
-    end.writeUInt16LE(files.length, 8);
-    end.writeUInt16LE(files.length, 10);
-    end.writeUInt32LE(centralSize, 12);
-    end.writeUInt32LE(centralOffset, 16);
-    end.writeUInt16LE(0, 20);
-
-    return Buffer.concat([...localParts, ...centralParts, end]);
-}
-
-function shouldAutoZipGeneratedFiles(files) {
-    if (!Array.isArray(files) || files.length < 2) return false;
-    const projectExts = new Set(['.html','.htm','.css','.js','.mjs','.cjs','.ts','.tsx','.jsx','.json','.py','.php','.java','.xml','.yml','.yaml','.md','.txt','.env']);
-    return files.every(file => {
-        const name = String(file.filename || '').toLowerCase();
-        if (name === 'readme' || name.startsWith('readme.')) return true;
-        const dot = name.lastIndexOf('.');
-        return dot >= 0 && projectExts.has(name.slice(dot));
-    });
-}
-
-function mimeForFilename(filename) {
-    const ext = String(filename || '').toLowerCase().split('.').pop();
-    const map = {
-        html: 'text/html', htm: 'text/html', css: 'text/css', js: 'application/javascript',
-        mjs: 'application/javascript', cjs: 'application/javascript', ts: 'text/typescript',
-        json: 'application/json', md: 'text/markdown', txt: 'text/plain', py: 'text/x-python',
-        xml: 'application/xml', yml: 'text/yaml', yaml: 'text/yaml', php: 'text/plain',
-        java: 'text/plain', env: 'text/plain'
-    };
-    return map[ext] || 'application/octet-stream';
-}
-
-async function sendGeneratedDocuments(chatId, files, extra = {}) {
-    if (!Array.isArray(files) || files.length === 0) return;
-
-    let outgoing = files;
-    if (shouldAutoZipGeneratedFiles(files)) {
-        const zipBuffer = createStoredZip(files);
-        if (zipBuffer.length <= MAX_GENERATED_ZIP_BYTES) {
-            outgoing = [{
-                type: 'zip',
-                filename: `vgen-project-${Date.now()}.zip`,
-                buffer: zipBuffer,
-                bundledFiles: files.map(f => f.filename)
-            }];
-        }
-    }
-
-    for (const file of outgoing) {
-        try {
-            const caption = String(extra.caption || (file.type === 'zip'
-                ? `📦 <b>${file.filename}</b>\nProject ZIP siap. Semua file yang saling berhubungan sudah disatukan di sini.`
-                : `📄 <b>${file.filename}</b>\nFile lengkap sudah siap.`));
-            const options = { ...extra, caption, parse_mode: 'HTML' };
-            await bot.sendDocument(chatId, file.buffer, options, {
-                filename: file.filename,
-                contentType: file.type === 'zip' ? 'application/zip' : mimeForFilename(file.filename)
-            });
-        } catch (e) {
-            console.error('[SEND GENERATED FILE ERROR]', e.message);
-            await sendReply(bot, chatId, `😭 File <b>${file.filename}</b> gagal dikirim. Coba minta ulang file-nya.`, extra);
-        }
-    }
-}
-
-// ============================================================
 // CALLBACK BUTTON ENGINE
 // ============================================================
 bot.on('callback_query', async (query) => {
@@ -781,32 +408,24 @@ bot.on('callback_query', async (query) => {
     const chatId = String(query.message?.chat?.id || '');
 
     try {
-        if (!chatId || !data.startsWith('ask|')) {
-            await bot.answerCallbackQuery(query.id);
-            return;
-        }
+        await bot.answerCallbackQuery(query.id);
+        if (!chatId || !data.startsWith('ask|')) return;
 
         const action = data.slice(4).trim();
-        if (!action) {
-            await bot.answerCallbackQuery(query.id);
-            return;
-        }
-
-        // Tekan tombol = langsung dianggap sebagai pesan pengguna ke AI.
-        await bot.answerCallbackQuery(query.id, { text: '⏳ AI lagi jawab...' });
-        await bot.sendChatAction(chatId, 'typing').catch(() => {});
-
-        let extraContext = '';
-        if (/upgrade ai|limit/i.test(action)) {
-            extraContext = `[INFO SISTEM: Pengguna bertanya tentang UPGRADE AI / LIMIT. Jawab dengan SANGAT RAPIH menggunakan paragraf, enter, dan list (bullet points). Gunakan bold standar (*teks*) pada judul. Jelaskan secara profesional namun asik tentang keanggotaan "VGen AI+", apa saja benefit tanpa batasnya, dan cara daftarnya.]\n`;
-        }
+        if (!action) return;
 
         const finalPrompt =
             `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
-            `[INFO SISTEM: Jawab langsung permintaan pengguna. Wajib format rapih pakai baris baru (enter)!]\n` +
-            `[INFO SISTEM: Di AKHIR jawaban, WAJIB buat 2-4 tombol dinamis (JSON [BUTTONS: ...]) yang topiknya NGARANG SENDIRI & BARU sesuai konteks obrolan! JANGAN pakai topik default terus!]\n` +
+            `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
-            `${extraContext}${action}`;
+            `Permintaan pengguna dari tombol:\n${action}`;
+
+        await sendReply(
+            bot,
+            chatId,
+            `<i>your selected:</i> ${action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
+            { reply_to_message_id: query.message?.message_id }
+        );
 
         const stopRecordingPresence = startRecordingPresence(chatId);
         let response;
@@ -817,6 +436,8 @@ bot.on('callback_query', async (query) => {
         }
 
         let rawResponse = cleanText(response);
+
+        // FITUR GAMBAR: Hanya dikirim jika ada tag [IMAGE: ...]
         let imageToSent = null;
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
@@ -825,56 +446,28 @@ bot.on('callback_query', async (query) => {
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
 
-        const generatedResult = parseGeneratedFiles(rawResponse);
-        rawResponse = generatedResult.text;
-        const buttonResult = parseDynamicButtons(rawResponse);
-        rawResponse = buttonResult.text;
-        const ensuredButtons = await ensureAIButtons(chatId, action, rawResponse, buttonResult.buttons, /alight\s*motion|am\s*prem|am\s*premium/i.test(action));
-        const inline_keyboard = ensuredButtons.length ? [ensuredButtons] : [];
+        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+        rawResponse = rawResponse.replace(buttonRegex, '').trim();
 
-        if (!rawResponse) rawResponse = generatedResult.files.length
-            ? '📦 File-nya sudah siap.'
-            : '😭 AI nggak menghasilkan jawaban kali ini.';
+        if (!rawResponse) rawResponse = '😭 AI nggak menghasilkan jawaban kali ini.';
 
-        pushHistory(chatId, 'user', action);
+        pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', rawResponse);
 
-        const markup = inline_keyboard.length ? { reply_markup: { inline_keyboard } } : {};
-        const extraOptions = { reply_to_message_id: query.message?.message_id, ...markup };
-
-        // Foto + caption + tombol = SATU bubble.
+        let extraOptions = { reply_to_message_id: query.message?.message_id };
         if (imageToSent) {
             try {
-                await bot.sendPhoto(chatId, imageToSent, {
-                    caption: convertMarkdownToHTML(rawResponse).slice(0, 1024),
-                    parse_mode: 'HTML',
-                    ...markup,
-                    reply_to_message_id: query.message?.message_id
-                });
-                if (generatedResult.files.length > 0) {
-                    await sendGeneratedDocuments(chatId, generatedResult.files, markup);
-                }
+                await bot.sendPhoto(chatId, imageToSent);
             } catch (e) {
                 console.error('[GAMBAR CALLBACK GAGAL]', e.message);
-                if (generatedResult.files.length > 0) await sendGeneratedDocuments(chatId, generatedResult.files, { ...markup, caption: rawResponse });
-                else await sendReply(bot, chatId, rawResponse, extraOptions);
             }
-            return;
         }
-
-        // Dokumen/ZIP + caption + tombol = SATU bubble. Caption berada di bawah file.
-        if (generatedResult.files.length > 0) {
-            await sendGeneratedDocuments(chatId, generatedResult.files, { ...markup, caption: rawResponse });
-            return;
-        }
-
         await sendReply(bot, chatId, rawResponse, extraOptions);
 
     } catch (error) {
         if (chatId) {
-            try { await sendReply(bot, chatId, '😭 Tombolnya kepencet dan request-nya masuk, tapi AI lagi ngadat. Coba pencet lagi.'); } catch {}
+            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi AI lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
         }
-        console.error('[BUTTON CALLBACK ERROR]', error.message || error);
     }
 });
 
@@ -889,78 +482,89 @@ bot.on('message', async (msg) => {
 
     try {
         const stopRecordingPresence = startRecordingPresence(chatId);
+
         let response;
         try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const buttonReminder = `[INFO SISTEM MUTLAK: 
-1. FORMAT RAPIH: WAJIB gunakan paragraf, baris baru (enter), dan list agar rapi. Gunakan bold standar (*teks*).
-2. TOMBOL DINAMIS: Di AKHIR jawaban, WAJIB buat 2-4 tombol rekomendasi lanjutan format JSON [BUTTONS: [{"text":"(Emoji) Topik Ngarang 1","callback_data":"ask|..."}]]. Topiknya WAJIB BARU dan NGARANG SENDIRI mengikuti keseruan obrolan! DILARANG keras mengulang tombol default!
-3. ALIGHT MOTION: Jika membahas Alight Motion/AM, tawarkan AM Prem ke Telegram @vickyyvall dan WAJIB sertakan tag [IMAGE: https://ibb.co.com/Tx5ND8rF] di dalam jawaban.
-4. FILE/ZIP: Jika disuruh bikin kode/file gunakan [FILE: filename="..."]...[/FILE] atau [ZIP: filename="...zip"].]`;
-
-            const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
+            const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
             stopRecordingPresence();
         }
 
+        let rawResponse = cleanText(response);
         if (aiMutedChats.has(chatId)) return;
 
-        let rawResponse = cleanText(response);
+        // Tangkap Tag Gambar
         let imageToSent = null;
-        const amTopic = /\b(am|alight\s*motion|am\s*prem|am\s*premium)\b/i.test(text || '') || /ibb\.co\/xQvP6qy/i.test(text || '');
-        const amPremiumImage = 'https://ibb.co.com/Tx5ND8rF';
-
-        
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
         if (imgMatch) {
             imageToSent = imgMatch[1];
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
-        if (!imageToSent && amTopic) imageToSent = amPremiumImage;
 
-        const generatedResult = parseGeneratedFiles(rawResponse);
-        rawResponse = generatedResult.text;
-        const buttonResult = parseDynamicButtons(rawResponse);
-        rawResponse = buttonResult.text;
-        const ensuredButtons = await ensureAIButtons(chatId, text, rawResponse, buttonResult.buttons, amTopic);
-        const inline_keyboard = ensuredButtons.length ? [ensuredButtons] : [];
+        // Parse Dynamic Buttons
+        let inline_keyboard = [];
+        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+        const match = rawResponse.match(buttonRegex);
+
+        if (match) {
+            try {
+                const aiButtons = JSON.parse(match[1]);
+                const validButtons = [];
+                if (Array.isArray(aiButtons)) {
+                    for (const original of aiButtons) {
+                        if (!original || typeof original !== 'object') continue;
+                        const text = String(original.text || '').trim();
+                        const url = String(original.url || '').trim();
+                        const callbackData = String(original.callback_data || '').trim();
+
+                        if (!text) continue;
+                        if (callbackData && callbackData.startsWith('ask|')) {
+                            let safeCallback = callbackData;
+                            if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
+                                safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
+                            }
+                            validButtons.push({ text, callback_data: safeCallback });
+                            continue;
+                        }
+                        if (url && /^https?:\/\/\S+$/i.test(url)) {
+                            validButtons.push({ text, url });
+                        }
+                        if (validButtons.length >= 2) break;
+                    }
+                }
+
+                if (validButtons.length > 0) {
+                    inline_keyboard = [validButtons.slice(0, 2)];
+                }
+                rawResponse = rawResponse.replace(buttonRegex, '').trim();
+            } catch (error) {
+                console.error('[BUTTON PARSER ERROR]', error.message);
+                rawResponse = rawResponse.replace(buttonRegex, '').trim();
+                inline_keyboard = [];
+            }
+        }
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', rawResponse);
 
-        const markup = inline_keyboard.length ? { reply_markup: { inline_keyboard } } : {};
-        const extraOptions = { reply_to_message_id: msg.message_id, ...markup };
+        let extraOptions = { reply_to_message_id: msg.message_id };
+        if (inline_keyboard.length > 0) {
+            extraOptions.reply_markup = { inline_keyboard };
+        }
 
-        // AM Premium: gambar + chat + tombol dalam SATU bubble foto.
         if (imageToSent) {
             try {
-                await bot.sendPhoto(msg.chat.id, imageToSent, {
-                    caption: convertMarkdownToHTML(rawResponse).slice(0, 1024),
-                    parse_mode: 'HTML',
-                    ...markup,
-                    reply_to_message_id: msg.message_id
-                });
+                await bot.sendPhoto(chatId, imageToSent);
             } catch (e) {
                 console.error('[GAMBAR CHAT GAGAL]', e.message);
-                if (generatedResult.files.length === 0) {
-                    await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
-                }
             }
-        } else if (generatedResult.files.length > 0) {
-            // ZIP/dokumen + caption chat + tombol = SATU bubble dokumen.
-            await sendGeneratedDocuments(msg.chat.id, generatedResult.files, { ...markup, caption: rawResponse });
-        } else {
-            await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
         }
 
-        // Kalau AM/image sekaligus punya file, file tetap dikirim sebagai dokumen terpisah.
-        // Kalau tidak ada image, dokumen sudah dikirim di cabang di atas.
-        if (imageToSent && generatedResult.files.length > 0) {
-            await sendGeneratedDocuments(msg.chat.id, generatedResult.files, { ...markup, caption: rawResponse });
-        }
+        await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
 
     } catch (error) {
         const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
