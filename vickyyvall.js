@@ -551,6 +551,27 @@ function parseGeneratedFiles(rawText) {
     return { text, files: generated };
 }
 
+function collapseRelatedFilesToZip(result, userText) {
+    if (!result || !Array.isArray(result.files) || result.files.length < 2) return result;
+    if (result.files.some(f => f.type === 'zip')) return result;
+
+    const t = String(userText || '');
+    const looksLikeProject = /html|css|javascript|node\.?js|script|coding|kode|program|project|website|web|json|python|readme/i.test(t);
+    if (!looksLikeProject) return result;
+
+    const zipBuffer = createStoredZip(result.files);
+    if (zipBuffer.length > MAX_GENERATED_ZIP_BYTES) return result;
+
+    const base = sanitizeGeneratedFilename(
+        t.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60),
+        'vgen-project'
+    );
+    return {
+        text: result.text,
+        files: [{ type: 'zip', filename: `${base || 'vgen-project'}.zip`, buffer: zipBuffer }]
+    };
+}
+
 // CRC-32 untuk ZIP sederhana tanpa dependency tambahan.
 const CRC32_TABLE = (() => {
     const table = new Uint32Array(256);
@@ -631,12 +652,39 @@ function createStoredZip(files) {
     return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
-async function sendGeneratedDocuments(chatId, files, extra = {}) {
+function buildFallbackButtons(userText, isAM = false, hasFiles = false) {
+    const t = String(userText || '').toLowerCase();
+    const buttons = [];
+
+    if (isAM) {
+        buttons.push({ text: '💎 Order AM Prem', url: 'https://t.me/vickyyvall' });
+        buttons.push({ text: '✨ Fitur AM Prem', callback_data: 'ask|jelaskan fitur dan keuntungan Alight Motion Premium' });
+        return buttons;
+    }
+
+    if (hasFiles || /html|css|javascript|node\.?js|script|kode|coding|program|project|json|python|readme/i.test(t)) {
+        buttons.push({ text: '🛠️ Revisi kode', callback_data: 'ask|revisi atau sempurnakan file yang baru dibuat' });
+        buttons.push({ text: '📦 Jadikan ZIP', callback_data: 'ask|jadikan project ini ZIP lengkap dengan file yang diperlukan' });
+        return buttons;
+    }
+
+    if (/persija|persib|bola|sepak ?bola/i.test(t)) {
+        buttons.push({ text: '⚽ Bahas lagi', callback_data: 'ask|lanjut bahas topik sepak bola ini dengan lebih detail' });
+        return buttons;
+    }
+
+    buttons.push({ text: '💬 Lanjut chat', callback_data: 'ask|lanjutkan pembahasan dari jawaban tadi' });
+    return buttons;
+}
+
+async function sendGeneratedDocuments(chatId, files, captionText = '', extra = {}) {
     for (const file of files) {
         try {
-            const caption = file.type === 'zip'
-                ? `📦 <b>${file.filename}</b>\nProject ZIP siap dikirim.\n\nBuka file-nya, ekstrak, lalu gas.`
-                : `📄 <b>${file.filename}</b>\nFile lengkap sudah siap.`;
+            const safeCaption = String(captionText || '').trim();
+            const caption = safeCaption.slice(0, 1024) || (file.type === 'zip'
+                ? `📦 <b>${file.filename}</b>\nProject ZIP siap dikirim.`
+                : `📄 <b>${file.filename}</b>\nFile lengkap sudah siap.`);
+
             await bot.sendDocument(chatId, file.buffer, {
                 ...extra,
                 caption,
@@ -672,13 +720,6 @@ bot.on('callback_query', async (query) => {
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
             `Permintaan pengguna dari tombol:\n${action}`;
 
-        await sendReply(
-            bot,
-            chatId,
-            `<i>your selected:</i> ${action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
-            { reply_to_message_id: query.message?.message_id }
-        );
-
         const stopRecordingPresence = startRecordingPresence(chatId);
         let response;
         try {
@@ -688,8 +729,6 @@ bot.on('callback_query', async (query) => {
         }
 
         let rawResponse = cleanText(response);
-
-        // Tangkap tag IMAGE, FILE/ZIP, dan BUTTONS dari output AI.
         let imageToSent = null;
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
@@ -698,35 +737,50 @@ bot.on('callback_query', async (query) => {
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
 
-        const generatedResult = parseGeneratedFiles(rawResponse);
+        let generatedResult = parseGeneratedFiles(rawResponse);
+        generatedResult = collapseRelatedFilesToZip(generatedResult, action);
         rawResponse = generatedResult.text;
 
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        let inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
 
-        if (!rawResponse) rawResponse = generatedResult.files.length ? '📦 File-nya sudah siap, cek dokumen yang baru dikirim.' : '😭 AI nggak menghasilkan jawaban kali ini.';
+        const amTopic = /alight\s*motion|am\s*prem|am\s*premium/i.test(action);
+        const amPremiumImage = 'https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png';
+        if (!imageToSent && amTopic) imageToSent = amPremiumImage;
+        if (!inline_keyboard.length && (amTopic || generatedResult.files.length || rawResponse)) {
+            inline_keyboard = [buildFallbackButtons(action, amTopic, generatedResult.files.length > 0)];
+        }
+
+        if (!rawResponse) {
+            rawResponse = generatedResult.files.length
+                ? '📦 file-nya sudah siap, cek dokumen yang baru dikirim.'
+                : '😭 ai nggak menghasilkan jawaban kali ini.';
+        }
 
         pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', rawResponse);
 
-        let extraOptions = { reply_to_message_id: query.message?.message_id };
-        if (inline_keyboard.length > 0) extraOptions.reply_markup = { inline_keyboard };
-        if (imageToSent) {
-            try {
-                await bot.sendPhoto(chatId, imageToSent, { reply_to_message_id: query.message?.message_id });
-            } catch (e) {
-                console.error('[GAMBAR CALLBACK GAGAL]', e.message);
-            }
-        }
-        await sendReply(bot, chatId, rawResponse, extraOptions);
+        const extra = { reply_to_message_id: query.message?.message_id };
+        if (inline_keyboard.length) extra.reply_markup = { inline_keyboard };
+
         if (generatedResult.files.length > 0) {
-            await sendGeneratedDocuments(chatId, generatedResult.files, inline_keyboard.length > 0 ? { reply_markup: { inline_keyboard } } : {});
+            // SATU GELEMBUNG: dokumen di atas, chat/caption + tombol menempel di bawah dokumen.
+            await sendGeneratedDocuments(chatId, generatedResult.files, rawResponse, extra);
+        } else if (imageToSent) {
+            // SATU GELEMBUNG: gambar + chat + tombol.
+            await bot.sendPhoto(chatId, imageToSent, {
+                ...extra,
+                caption: rawResponse.slice(0, 1024),
+                parse_mode: 'HTML'
+            });
+        } else {
+            await sendReply(bot, chatId, rawResponse, extra);
         }
 
     } catch (error) {
         if (chatId) {
-            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi AI lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
+            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi ai lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
         }
     }
 });
@@ -747,8 +801,8 @@ bot.on('message', async (msg) => {
                 try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            // INJEKSI RAHASIA BIAR TOMBOL SELALU MUNCUL PAS DIBUTUHKAN
-            const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi yang relevan. Gunakan sintaks [BUTTONS: [{"text":"...","callback_data":"ask|..."}]] dan pastikan JSON VALID. Jika user membahas Alight Motion Premium/AM Prem, sertakan tag [IMAGE: https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png] dan bila relevan tombol order ke Telegram @vickyyvall. Jika user meminta membuat HTML/JS/CSS/Python/JSON/script/project, kirim kode sebagai [FILE: filename="..."]...[/FILE] untuk satu file atau [ZIP: filename="...zip"]...[/ZIP] untuk beberapa file. Jangan taruh tag mesin di paragraf biasa.]`;
+            // INJEKSI OUTPUT ENGINE: tombol, AM Prem, dan delivery file harus benar-benar dikirim engine.
+            const buttonReminder = `[INFO SISTEM: Untuk jawaban yang punya opsi lanjutan, WAJIB buat 1-3 tombol [BUTTONS] dengan JSON VALID. Untuk Alight Motion Premium/AM Prem WAJIB buat CHAT + [IMAGE: https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png] + minimal 1 tombol order ke https://t.me/vickyyvall]. Jika membuat satu file gunakan [FILE: filename="..."]...[/FILE]. Jika membuat 2+ file yang saling berhubungan dalam satu project, WAJIB gunakan [ZIP: filename="...zip"] dengan beberapa [ZIP_FILE: filename="..."]...[/ZIP_FILE]. Caption/chat harus berada sebelum tag file. Jangan taruh tag mesin di paragraf biasa.`;
             const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
@@ -771,38 +825,53 @@ bot.on('message', async (msg) => {
         if (!imageToSent && amTopic) imageToSent = amPremiumImage;
 
         // Parse FILE / ZIP sebelum BUTTONS agar tag nested tidak bocor ke chat.
-        const generatedResult = parseGeneratedFiles(rawResponse);
+        let generatedResult = parseGeneratedFiles(rawResponse);
+        generatedResult = collapseRelatedFilesToZip(generatedResult, text);
         rawResponse = generatedResult.text;
 
-        // Parser tombol baru: bracket-aware + validasi JSON + sampai 3 tombol.
+        // Parser tombol: bracket-aware + validasi JSON + sampai 3 tombol.
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        let inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+
+        // Fallback tombol supaya fitur tidak hilang walaupun model lupa menulis tag.
+        if (!inline_keyboard.length) {
+            inline_keyboard = [buildFallbackButtons(text, amTopic, generatedResult.files.length > 0)];
+        }
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', rawResponse);
 
-        let extraOptions = { reply_to_message_id: msg.message_id };
-        if (inline_keyboard.length > 0) {
-            extraOptions.reply_markup = { inline_keyboard };
-        }
+        let extraOptions = { reply_to_message_id: msg.message_id, reply_markup: { inline_keyboard } };
 
-        if (imageToSent) {
-            try {
-                await bot.sendPhoto(chatId, imageToSent);
-            } catch (e) {
-                console.error('[GAMBAR CHAT GAGAL]', e.message);
-            }
+        if (!rawResponse) {
+            rawResponse = generatedResult.files.length
+                ? '📦 file-nya sudah siap, cek dokumen yang baru dikirim.'
+                : '😭 ai nggak menghasilkan jawaban kali ini.';
         }
-
-        await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
 
         if (generatedResult.files.length > 0) {
+            // SATU GELEMBUNG: dokumen/ZIP di atas, caption/chat + tombol tepat di bawahnya.
             await sendGeneratedDocuments(
                 msg.chat.id,
                 generatedResult.files,
-                inline_keyboard.length > 0 ? { reply_to_message_id: msg.message_id, reply_markup: { inline_keyboard } } : { reply_to_message_id: msg.message_id }
+                rawResponse,
+                extraOptions
             );
+        } else if (imageToSent) {
+            // SATU GELEMBUNG: gambar AM Prem + chat + tombol jadi satu pesan.
+            try {
+                await bot.sendPhoto(msg.chat.id, imageToSent, {
+                    ...extraOptions,
+                    caption: rawResponse.slice(0, 1024),
+                    parse_mode: 'HTML'
+                });
+            } catch (e) {
+                console.error('[GAMBAR CHAT GAGAL]', e.message);
+                await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+            }
+        } else {
+            await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
         }
 
     } catch (error) {
