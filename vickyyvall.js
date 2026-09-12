@@ -28,7 +28,6 @@ try {
     vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
 }
 
-
 // ============================================================
 // KONFIGURASI
 // ============================================================
@@ -136,6 +135,7 @@ function splitForTelegram(text, max = 4000) {
 }
 
 async function sendReply(bot, chatId, text, extra = {}) {
+    if (!text) return; // Kalo kosong jangan dikirim
     const htmlText = convertMarkdownToHTML(text);
     for (const chunk of splitForTelegram(htmlText)) {
         try {
@@ -216,19 +216,15 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         randomStartButtons()
     ];
 
-    // 🟢 TARO LINK MEDIA LU DI SINI 🟢
-    // Ganti URL di bawah sama link gambar/GIF lu! (Contoh: https://link-gambar.com/foto.jpg)
     const mediaUrl = 'https://ibb.co.com/s9tq563Y';
 
     try {
-        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
         await bot.sendPhoto(msg.chat.id, mediaUrl, {
             caption: text,
             parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
-        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
         await sendReply(bot, msg.chat.id, text, {
             reply_markup: { inline_keyboard: keyboard }
         });
@@ -401,6 +397,104 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
 }
 
 // ============================================================
+// CORE MESSAGE & CALLBACK PARSER
+// ============================================================
+async function processAIResponse(chatId, rawResponse, replyToId) {
+    let text = String(rawResponse || '').trim();
+
+    // 1. EXTRACT IMAGE (NEW SAFE SYNTAX <<<IMAGE: ...>>>)
+    let imageToSent = null;
+    const imageRegex = /<<<IMAGE:\s*(https?:\/\/[^\s>]+)\s*>>>/is;
+    const imgMatch = text.match(imageRegex);
+    if (imgMatch) {
+        imageToSent = imgMatch[1];
+        text = text.replace(imageRegex, '').trim();
+    }
+
+    // 2. EXTRACT FILE (NEW SAFE SYNTAX <<<FILE: filename.ext|content>>>)
+    let fileToSend = null;
+    const fileRegex = /<<<FILE:\s*([^|]+)\|([\s\S]*?)>>>/is;
+    const fileMatch = text.match(fileRegex);
+    if (fileMatch) {
+        fileToSend = {
+            name: fileMatch[1].trim(),
+            content: fileMatch[2].trim()
+        };
+        text = text.replace(fileRegex, '').trim();
+    }
+
+    // 3. EXTRACT BUTTONS (NEW SAFE SYNTAX <<<BUTTONS: [...]>>>)
+    let inline_keyboard = [];
+    const buttonRegex = /<<<BUTTONS:\s*(\[.*?\])\s*>>>/is;
+    const btnMatch = text.match(buttonRegex);
+    if (btnMatch) {
+        try {
+            const aiButtons = JSON.parse(btnMatch[1]);
+            const validButtons = [];
+            if (Array.isArray(aiButtons)) {
+                for (const original of aiButtons) {
+                    if (!original || typeof original !== 'object') continue;
+                    const btnText = String(original.text || '').trim();
+                    const url = String(original.url || '').trim();
+                    const callbackData = String(original.callback_data || '').trim();
+
+                    if (!btnText) continue;
+                    if (callbackData && callbackData.startsWith('ask|')) {
+                        let safeCallback = callbackData;
+                        if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
+                            safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
+                        }
+                        validButtons.push({ text: btnText, callback_data: safeCallback });
+                        continue;
+                    }
+                    if (url && /^https?:\/\/\S+$/i.test(url)) {
+                        validButtons.push({ text: btnText, url });
+                    }
+                    if (validButtons.length >= 2) break;
+                }
+            }
+            if (validButtons.length > 0) {
+                inline_keyboard = [validButtons.slice(0, 2)];
+            }
+        } catch (error) {
+            console.error('[BUTTON PARSER ERROR]', error.message);
+        }
+        text = text.replace(buttonRegex, '').trim();
+    }
+
+    if (!text && !imageToSent && !fileToSend) {
+        text = '😭 AI nggak menghasilkan jawaban kali ini.';
+    }
+
+    // Kirim Media
+    if (imageToSent) {
+        try {
+            await bot.sendPhoto(chatId, imageToSent);
+        } catch (e) {
+            console.error('[GAMBAR CHAT GAGAL]', e.message);
+        }
+    }
+
+    if (fileToSend) {
+        try {
+            const fileBuffer = Buffer.from(fileToSend.content, 'utf8');
+            await bot.sendDocument(chatId, fileBuffer, {}, { filename: fileToSend.name, contentType: 'text/plain' });
+        } catch (e) {
+            console.error('[FILE SEND ERROR]', e.message);
+        }
+    }
+
+    // Kirim Teks + Tombol
+    let extraOptions = { reply_to_message_id: replyToId };
+    if (inline_keyboard.length > 0) {
+        extraOptions.reply_markup = { inline_keyboard };
+    }
+
+    await sendReply(bot, chatId, text, extraOptions);
+    return text;
+}
+
+// ============================================================
 // CALLBACK BUTTON ENGINE
 // ============================================================
 bot.on('callback_query', async (query) => {
@@ -435,34 +529,10 @@ bot.on('callback_query', async (query) => {
             stopRecordingPresence();
         }
 
-        let rawResponse = cleanText(response);
-
-        // FITUR GAMBAR: Hanya dikirim jika ada tag [IMAGE: ...]
-        let imageToSent = null;
-        const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
-        const imgMatch = rawResponse.match(imageRegex);
-        if (imgMatch) {
-            imageToSent = imgMatch[1];
-            rawResponse = rawResponse.replace(imageRegex, '').trim();
-        }
-
-        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
-        rawResponse = rawResponse.replace(buttonRegex, '').trim();
-
-        if (!rawResponse) rawResponse = '😭 AI nggak menghasilkan jawaban kali ini.';
-
+        const finalSavedText = await processAIResponse(chatId, response, query.message?.message_id);
+        
         pushHistory(chatId, 'user', finalPrompt);
-        pushHistory(chatId, 'assistant', rawResponse);
-
-        let extraOptions = { reply_to_message_id: query.message?.message_id };
-        if (imageToSent) {
-            try {
-                await bot.sendPhoto(chatId, imageToSent);
-            } catch (e) {
-                console.error('[GAMBAR CALLBACK GAGAL]', e.message);
-            }
-        }
-        await sendReply(bot, chatId, rawResponse, extraOptions);
+        pushHistory(chatId, 'assistant', finalSavedText);
 
     } catch (error) {
         if (chatId) {
@@ -471,6 +541,9 @@ bot.on('callback_query', async (query) => {
     }
 });
 
+// ============================================================
+// CHAT LISTENER
+// ============================================================
 bot.on('message', async (msg) => {
     const text = cleanText(msg.text || msg.caption || '');
     if (!text && !getMediaFromMessage(msg)) return;
@@ -493,78 +566,12 @@ bot.on('message', async (msg) => {
             stopRecordingPresence();
         }
 
-        let rawResponse = cleanText(response);
         if (aiMutedChats.has(chatId)) return;
 
-        // Tangkap Tag Gambar
-        let imageToSent = null;
-        const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
-        const imgMatch = rawResponse.match(imageRegex);
-        if (imgMatch) {
-            imageToSent = imgMatch[1];
-            rawResponse = rawResponse.replace(imageRegex, '').trim();
-        }
-
-        // Parse Dynamic Buttons
-        let inline_keyboard = [];
-        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
-        const match = rawResponse.match(buttonRegex);
-
-        if (match) {
-            try {
-                const aiButtons = JSON.parse(match[1]);
-                const validButtons = [];
-                if (Array.isArray(aiButtons)) {
-                    for (const original of aiButtons) {
-                        if (!original || typeof original !== 'object') continue;
-                        const text = String(original.text || '').trim();
-                        const url = String(original.url || '').trim();
-                        const callbackData = String(original.callback_data || '').trim();
-
-                        if (!text) continue;
-                        if (callbackData && callbackData.startsWith('ask|')) {
-                            let safeCallback = callbackData;
-                            if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
-                                safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
-                            }
-                            validButtons.push({ text, callback_data: safeCallback });
-                            continue;
-                        }
-                        if (url && /^https?:\/\/\S+$/i.test(url)) {
-                            validButtons.push({ text, url });
-                        }
-                        if (validButtons.length >= 2) break;
-                    }
-                }
-
-                if (validButtons.length > 0) {
-                    inline_keyboard = [validButtons.slice(0, 2)];
-                }
-                rawResponse = rawResponse.replace(buttonRegex, '').trim();
-            } catch (error) {
-                console.error('[BUTTON PARSER ERROR]', error.message);
-                rawResponse = rawResponse.replace(buttonRegex, '').trim();
-                inline_keyboard = [];
-            }
-        }
+        const finalSavedText = await processAIResponse(chatId, response, msg.message_id);
 
         pushHistory(chatId, 'user', text || '[Media]');
-        pushHistory(chatId, 'assistant', rawResponse);
-
-        let extraOptions = { reply_to_message_id: msg.message_id };
-        if (inline_keyboard.length > 0) {
-            extraOptions.reply_markup = { inline_keyboard };
-        }
-
-        if (imageToSent) {
-            try {
-                await bot.sendPhoto(chatId, imageToSent);
-            } catch (e) {
-                console.error('[GAMBAR CHAT GAGAL]', e.message);
-            }
-        }
-
-        await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+        pushHistory(chatId, 'assistant', finalSavedText);
 
     } catch (error) {
         const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
