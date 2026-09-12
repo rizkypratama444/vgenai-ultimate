@@ -1,11 +1,7 @@
 /**
  * VGEN AI - TELEGRAM BOT EDITION
- * Server-side provider selector + Gemini automatic quota failover.
+ * Engine Telegram Bot API + Fix HTML Parser & Formatting Security
  * Node.js 22+.
- *
- * IMPORTANT:
- * - API keys are loaded from ./vgen-secrets.json, never sent to the browser.
- * - TELEGRAM_BOT_TOKEN stays in environment variables.
  */
 
 const express = require('express');
@@ -14,31 +10,28 @@ const fs = require('fs');
 const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 
+// ============================================================
+// FIX RAILWAY CRASH (ANTI LOG SPAM)
+// ============================================================
 process.on('uncaughtException', (err) => {
-    console.error('[UNCAUGHT EXCEPTION]', safeError(err));
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('[UNHANDLED REJECTION]', safeError(reason));
+    console.error('[UNCAUGHT EXCEPTION]', err ? (err.message || err) : 'Unknown Error');
 });
 
-function safeError(err) {
-    let msg = String(err?.message || err || 'Unknown error');
-    try {
-        const all = [...(secretConfig?.geminiAccounts || []), ...(secretConfig?.openaiAccounts || [])];
-        for (const item of all) {
-            if (item?.key) msg = msg.split(item.key).join('[REDACTED]');
-        }
-    } catch {}
-    return msg.replace(/key=[^&\s]+/gi, 'key=[REDACTED]').slice(0, 700);
-}
+process.on('unhandledRejection', (reason) => {
+    console.error('[UNHANDLED REJECTION]', reason ? (reason.message || reason) : 'Unknown Rejection');
+});
 
 let vgenPrompt = '';
 try {
     vgenPrompt = require('./prompt.js');
-} catch {
+} catch (e) {
     vgenPrompt = 'Kamu adalah VGen AI, asisten yang cerdas dan efisien.';
 }
 
+
+// ============================================================
+// KONFIGURASI
+// ============================================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI_SINI';
 const PORT = process.env.PORT || 8080;
 const MAX_HISTORY = 15;
@@ -49,29 +42,9 @@ if (TELEGRAM_BOT_TOKEN === 'PASTE_BOT_TOKEN_DI_SINI') {
     process.exit(1);
 }
 
-const secretFile = path.join(__dirname, 'vgen-secrets.json');
-let secretConfig = { geminiAccounts: [], openaiAccounts: [] };
-
-try {
-    secretConfig = JSON.parse(fs.readFileSync(secretFile, 'utf8'));
-} catch (e) {
-    console.error('❌ vgen-secrets.json tidak ditemukan/tidak valid:', safeError(e));
-    process.exit(1);
-}
-
-const GEMINI_MODELS = [
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-3.5-flash'
-];
-
-const OPENAI_MODEL = 'gpt-5.4-mini';
-
-if (!Array.isArray(secretConfig.geminiAccounts) || secretConfig.geminiAccounts.length === 0) {
-    console.error('❌ Tidak ada Gemini API account di vgen-secrets.json.');
-    process.exit(1);
-}
-
+// ============================================================
+// DATABASE API CONFIG
+// ============================================================
 const dbFile = path.join(__dirname, 'database.json');
 let db = { apiConfig: {} };
 
@@ -79,30 +52,22 @@ if (fs.existsSync(dbFile)) {
     try {
         db = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     } catch (e) {
-        console.error('❌ Gagal membaca database.json:', safeError(e));
+        console.error('❌ Gagal membaca database.json:', e.message);
     }
 }
 
 function saveDb() {
-    // Hanya simpan state non-secret.
-    db.apiConfig = {
-        provider: activeProvider,
-        geminiAccountIndex: geminiAccountIndex,
-        geminiModelIndex: geminiModelIndex
-    };
     fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
 }
 
-let activeProvider = String(db.apiConfig?.provider || '').toUpperCase() || null;
-let geminiAccountIndex = Number.isInteger(db.apiConfig?.geminiAccountIndex) ? db.apiConfig.geminiAccountIndex : 0;
-let geminiModelIndex = Number.isInteger(db.apiConfig?.geminiModelIndex) ? db.apiConfig.geminiModelIndex : 0;
+let activeProvider = db.apiConfig?.provider || null;
+let activeApiKey = db.apiConfig?.apiKey || null;
+let activeModel = db.apiConfig?.model || null;
+let activeBaseUrl = db.apiConfig?.baseUrl || null;
 
-if (geminiAccountIndex < 0 || geminiAccountIndex >= secretConfig.geminiAccounts.length) geminiAccountIndex = 0;
-if (geminiModelIndex < 0 || geminiModelIndex >= GEMINI_MODELS.length) geminiModelIndex = 0;
-
+// Memori per chat Telegram.
 const userHistory = new Map();
 const aiMutedChats = new Set();
-const failoverInFlight = new Map();
 
 function historyFor(chatId) {
     const key = String(chatId);
@@ -126,35 +91,32 @@ function nowWIB() {
     return new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
 }
 
+function displayName(msg) {
+    const u = msg.from || {};
+    return [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || 'Telegram User';
+}
+
 function isCommand(text) {
     return /^\/(?:start|help|mute|unmute|status|reset)(?:@\w+)?(?:\s|$)/i.test(text);
 }
 
-function escapeHTML(value) {
-    return String(value || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
+// ============================================================
+// AUTO CONVERT MARKDOWN TO TELEGRAM HTML & SANITIZER
+// ============================================================
 function convertMarkdownToHTML(text) {
     if (!text) return '';
     let formatted = String(text);
 
-    formatted = formatted.replace(/```([\s\S]*?)```/g, (match, codeBlock) => {
-        let cleanCode = codeBlock.replace(/^[a-z]+\n/i, '');
-        let safeCode = escapeHTML(cleanCode);
-        return `<pre><code>${safeCode}</code></pre>`;
-    });
-
-    formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
-        return `<code>${escapeHTML(code)}</code>`;
-    });
-
-    formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    // Ubah *teks* menjadi <b>teks</b> jika AI lupa pake HTML
     formatted = formatted.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+
+    // Ubah ```kode``` menjadi <pre><code>kode</code></pre>
+    formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+
+    // Ubah `kode` menjadi <code>kode</code>
+    formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Rapikan bullet point liar
     formatted = formatted.replace(/[\uFFFD]/g, '•');
 
     return formatted;
@@ -179,121 +141,44 @@ async function sendReply(bot, chatId, text, extra = {}) {
         try {
             await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', ...extra });
         } catch (e) {
-            console.error('[SEND HTML ERROR]', safeError(e));
-            try {
-                await bot.sendMessage(chatId, chunk.replace(/<[^>]*>?/gm, ''), {
-                    ...extra,
-                    parse_mode: undefined
-                });
-            } catch {}
+            // Fallback otomatis ke Text Biasa jika HTML parsing crash
+            console.error('[SEND REPLY HTML ERROR, FALLBACK TO PLAIN TEXT]', e.message);
+            const plainText = chunk.replace(/<[^>]*>?/gm, '');
+            await bot.sendMessage(chatId, plainText, { ...extra, parse_mode: undefined });
         }
     }
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function randomMs(min, max) {
-    return Math.floor(min + Math.random() * (max - min + 1));
-}
-
-function currentGeminiTarget() {
-    const account = secretConfig.geminiAccounts[geminiAccountIndex];
-    return {
-        accountIndex: geminiAccountIndex,
-        modelIndex: geminiModelIndex,
-        email: account.email,
-        key: account.key,
-        model: GEMINI_MODELS[geminiModelIndex]
-    };
-}
-
-function advanceGeminiTarget() {
-    geminiModelIndex++;
-
-    if (geminiModelIndex >= GEMINI_MODELS.length) {
-        geminiModelIndex = 0;
-        geminiAccountIndex++;
-
-        if (geminiAccountIndex >= secretConfig.geminiAccounts.length) {
-            geminiAccountIndex = 0;
-        }
-    }
-
-    saveDb();
-    return currentGeminiTarget();
-}
-
-function isQuotaOrRateLimitError(status, data) {
-    const code = String(data?.error?.status || data?.error?.code || '').toUpperCase();
-    const msg = String(data?.error?.message || '').toLowerCase();
-
-    if (status === 429) return true;
-    if (status === 403 && /(quota|rate.?limit|resource.?exhausted|exceeded|permission)/i.test(msg)) return true;
-    if (code.includes('RESOURCE_EXHAUSTED')) return true;
-    return /(quota|rate.?limit|resource.?exhausted|too many requests|exceeded)/i.test(msg);
-}
-
-async function sendFailoverSequence(chatId, sourceMessageId) {
-    const key = String(chatId);
-
-    if (failoverInFlight.has(key)) {
-        return failoverInFlight.get(key);
-    }
-
-    const job = (async () => {
-        try {
-            // Pesan pertama MUTLAK reply/quote ke pesan lawan bicara.
-            await sendReply(bot, chatId, '⏳Loading', {
-                reply_to_message_id: sourceMessageId
-            });
-
-            // Random 1/2/3 detik.
-            await sleep(randomMs(1000, 3000));
-
-            await sendReply(bot, chatId, 'Server penuh, tunggu sebentar...');
-
-            // Thinking terakhir singkat dan random, tidak dibuat lama.
-            await sleep(randomMs(700, 1800));
-
-            await sendReply(bot, chatId, 'AI Berevolusi kembali✅');
-        } catch (e) {
-            // Status failover tidak boleh mengganggu jawaban utama.
-            console.error('[FAILOVER NOTICE]', safeError(e));
-        } finally {
-            failoverInFlight.delete(key);
-        }
-    })();
-
-    failoverInFlight.set(key, job);
-    return job;
-}
-
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-
-bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', safeError(err)));
-bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', safeError(err)));
-
+// ============================================================
+// LONG-RUNNING TELEGRAM "RECORDING" PRESENCE
+// ============================================================
 function startRecordingPresence(chatId) {
     let stopped = false;
-
     const sendPresence = async () => {
         if (stopped) return;
         try {
             await bot.sendChatAction(chatId, 'record_voice');
-        } catch {}
+        } catch (e) {}
     };
-
     sendPresence();
     const timer = setInterval(sendPresence, 4000);
-
     return () => {
         stopped = true;
         clearInterval(timer);
     };
 }
 
+// ============================================================
+// TELEGRAM BOT
+// ============================================================
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+
+bot.on('polling_error', (err) => console.error('[TELEGRAM POLLING ERROR]', err ? (err.message || err.code || 'Unknown Error') : 'Unknown'));
+bot.on('webhook_error', (err) => console.error('[TELEGRAM WEBHOOK ERROR]', err ? (err.message || err.code || 'Unknown Error') : 'Unknown'));
+
+// ============================================================
+// PREMIUM START MENU
+// ============================================================
 const START_BUTTON_POOL = [
     { text: '🧠 Jelasin sesuatu', callback_data: 'ask|jelasin satu hal menarik hari ini' },
     { text: '😂 Bikin aku ketawa', callback_data: 'ask|bikin aku ketawa dengan jokes singkat' },
@@ -311,11 +196,11 @@ function randomStartButtons() {
 
 bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
     const text =
-        `<b>VGen AI Multifungsi</b> 😎\n\n` +
-        `Teman AI yang siap nemenin lu kapan aja.\n\n` +
-        `Provider aktif: <b>${escapeHTML(activeProvider || 'BELUM DIAKTIFKAN')}</b>\n` +
-        `Gemini punya failover otomatis antar model + akun.\n\n` +
-        `<b>Gas ngobrol 👇</b>`;
+        `<b>VGen AI Multifungsi</b> 🏴󠁧󠁢󠁥󠁮󠁧󠁿\n\n` +
+        `Teman AI yang siap nemenin lu kapan aja. 😎\n\n` +
+        `Mau ngobrol, cari ide, belajar, coding, bahas bola, ` +
+        `atau sekadar random juga gas.\n\n` +
+        `<b>Temukan juga VGen AI di sini 👇</b>`;
 
     const keyboard = [
         [
@@ -331,9 +216,23 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         randomStartButtons()
     ];
 
-    await sendReply(bot, msg.chat.id, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
+    // 🟢 TARO LINK MEDIA LU DI SINI 🟢
+    // Ganti URL di bawah sama link gambar/GIF lu! (Contoh: https://link-gambar.com/foto.jpg)
+    const mediaUrl = 'https://ibb.co.com/s9tq563Y';
+
+    try {
+        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
+        await bot.sendPhoto(msg.chat.id, mediaUrl, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
+        await sendReply(bot, msg.chat.id, text, {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
 });
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
@@ -353,13 +252,10 @@ bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
 });
 
 bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
-    const target = activeProvider === 'GEMINI' ? currentGeminiTarget() : null;
-
     await sendReply(bot, msg.chat.id,
         `Status VGen AI\n` +
         `Provider: ${activeProvider || 'BELUM DISET'}\n` +
-        `Model: ${target?.model || (activeProvider === 'OPENAI' ? OPENAI_MODEL : 'BELUM DISET')}\n` +
-        `Akun: ${target?.email || (activeProvider === 'OPENAI' ? (secretConfig.openaiAccounts[0]?.email || '-') : '-')}\n` +
+        `Model: ${activeModel || 'BELUM DISET'}\n` +
         `Waktu WIB: ${nowWIB()}`
     );
 });
@@ -368,16 +264,13 @@ async function downloadTelegramFile(fileId) {
     try {
         const file = await bot.getFile(fileId);
         if (!file.file_path) return null;
-
         const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
         const res = await fetch(url);
-
         if (!res.ok) throw new Error(`Download Telegram gagal (${res.status})`);
-
         const buffer = Buffer.from(await res.arrayBuffer());
         return { buffer, filePath: file.file_path };
     } catch (e) {
-        console.error('[MEDIA DOWNLOAD]', safeError(e));
+        console.error('[MEDIA DOWNLOAD]', e.message);
         return null;
     }
 }
@@ -391,7 +284,6 @@ function getMediaFromMessage(msg) {
             fileName: 'telegram-photo.jpg'
         };
     }
-
     if (msg.document) {
         return {
             fileId: msg.document.file_id,
@@ -400,19 +292,14 @@ function getMediaFromMessage(msg) {
             fileName: msg.document.file_name || 'document'
         };
     }
-
     return null;
 }
 
 async function buildMediaPrompt(msg, basePrompt) {
     const media = getMediaFromMessage(msg);
-
-    if (!media) {
-        return { finalPrompt: basePrompt, base64Media: null, mimeTypeMedia: null };
-    }
+    if (!media) return { finalPrompt: basePrompt, base64Media: null, mimeTypeMedia: null };
 
     const downloaded = await downloadTelegramFile(media.fileId);
-
     if (!downloaded) {
         return {
             finalPrompt: `[Sistem: Lampiran Telegram tidak berhasil diunduh.]\n\n${basePrompt}`,
@@ -423,20 +310,15 @@ async function buildMediaPrompt(msg, basePrompt) {
 
     if (media.mediaType === 'document') {
         const lower = media.fileName.toLowerCase();
-        const readable =
-            media.mimeType.includes('text') ||
+        const readable = media.mimeType.includes('text') ||
             media.mimeType.includes('json') ||
             media.mimeType.includes('javascript') ||
             /\.(js|json|txt|csv|html|css|py|md)$/i.test(lower);
 
         if (readable) {
             const text = downloaded.buffer.toString('utf8').slice(0, MAX_TEXT_FILE);
-
             return {
-                finalPrompt:
-                    `[Sistem: Pengguna mengirim dokumen "${media.fileName}"]\n` +
-                    `Isi Dokumen:\n\`\`\`\n${text}\n\`\`\`\n\n` +
-                    `Pesan: ${basePrompt}`,
+                finalPrompt: `[Sistem: Pengguna mengirim dokumen "${media.fileName}"]\nIsi Dokumen:\n\`\`\`\n${text}\n\`\`\`\n\nPesan: ${basePrompt}`,
                 base64Media: null,
                 mimeTypeMedia: null
             };
@@ -456,220 +338,77 @@ async function buildMediaPrompt(msg, basePrompt) {
     };
 }
 
-async function askOpenAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
-    const account = secretConfig.openaiAccounts?.[0];
-
-    if (!account?.key) {
-        throw new Error('OpenAI belum memiliki API key server-side.');
-    }
-
-    let userContent = finalPrompt;
-
-    if (base64Media) {
-        userContent = [
-            { type: 'text', text: finalPrompt },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${mimeTypeMedia || 'image/jpeg'};base64,${base64Media}`
-                }
-            }
-        ];
+async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
+    if (!activeApiKey || !activeModel || !activeProvider) {
+        throw new Error('Provider/API key/model belum dikonfigurasi.');
     }
 
     const history = historyFor(chatId);
-    const messages = [
-        {
-            role: 'system',
-            content: typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt)
-        },
-        ...history,
-        { role: 'user', content: userContent }
-    ];
 
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${account.key}`
-        },
-        body: JSON.stringify({
-            model: OPENAI_MODEL,
-            messages
-        })
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || data.error) {
-        throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
-    }
-
-    return data.choices?.[0]?.message?.content || 'Model tidak mengembalikan jawaban.';
-}
-
-async function askGemini(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId) {
-    const history = historyFor(chatId);
-    const systemInstructionText =
-        typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt);
-
-    // Maksimal satu putaran penuh: Lite -> Flash -> 3.5 -> akun berikutnya.
-    // Jika seluruh putaran habis, ulangi lagi setelah jeda pendek.
-    const maxRounds = 3;
-    const totalTargets = secretConfig.geminiAccounts.length * GEMINI_MODELS.length;
-
-    for (let round = 0; round < maxRounds; round++) {
-        for (let attempt = 0; attempt < totalTargets; attempt++) {
-            const target = currentGeminiTarget();
-
-            const contents = history.map(h => ({
-                role: h.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: h.content }]
-            }));
-
-            const parts = [{ text: finalPrompt }];
-
-            if (base64Media) {
-                parts.push({
-                    inline_data: {
-                        mime_type: mimeTypeMedia || 'image/jpeg',
-                        data: base64Media
-                    }
-                });
-            }
-
-            contents.push({ role: 'user', parts });
-
-            const endpoint =
-                `https://generativelanguage.googleapis.com/v1beta/models/` +
-                `${encodeURIComponent(target.model)}:generateContent?key=${encodeURIComponent(target.key)}`;
-
-            let res;
-            let data;
-
-            try {
-                res = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        system_instruction: {
-                            parts: [{ text: systemInstructionText }]
-                        },
-                        contents
-                    })
-                });
-
-                data = await res.json();
-            } catch (networkError) {
-                // Gangguan jaringan bukan limit; coba target yang sama sekali lagi lewat
-                // perpindahan target agar bot tidak menggantung.
-                console.error('[GEMINI NETWORK]', safeError(networkError));
-                advanceGeminiTarget();
-                continue;
-            }
-
-            if (res.ok && !data.error) {
-                return data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') ||
-                    'Model tidak mengembalikan jawaban.';
-            }
-
-            if (isQuotaOrRateLimitError(res.status, data)) {
-                // Jangan kirim detail API/429 ke Telegram.
-                advanceGeminiTarget();
-
-                // Hanya tampilkan tiga pesan failover ketika benar-benar pindah
-                // karena kuota/rate-limit.
-                await sendFailoverSequence(chatId, sourceMessageId);
-                continue;
-            }
-
-            // 503: jangan bocorkan error mentah; pindah target setelah jeda singkat.
-            if (res.status === 503) {
-                await sleep(randomMs(500, 1200));
-                advanceGeminiTarget();
-                continue;
-            }
-
-            // Error konfigurasi/model tidak boleh masuk ke Telegram sebagai raw API error.
-            console.error(`[GEMINI ${res.status}]`, safeError(data));
-            throw new Error('Gemini sedang mengalami gangguan sementara.');
+    if (activeProvider === 'OPENAI') {
+        let userContent = finalPrompt;
+        if (base64Media) {
+            userContent = [
+                { type: 'text', text: finalPrompt },
+                { type: 'image_url', image_url: { url: `data:${mimeTypeMedia || 'image/jpeg'};base64,${base64Media}` } }
+            ];
         }
 
-        await sleep(randomMs(1000, 2500));
-    }
+        const messages = [
+            { role: 'system', content: typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt) },
+            ...history,
+            { role: 'user', content: userContent }
+        ];
 
-    throw new Error('Semua jalur Gemini sedang sibuk. Silakan kirim ulang sebentar lagi.');
-}
+        const endpoint = activeBaseUrl || 'https://api.openai.com/v1/chat/completions';
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${activeApiKey}` },
+            body: JSON.stringify({ model: activeModel, messages })
+        });
 
-async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId) {
-    if (!activeProvider) {
-        throw new Error('Provider AI belum diaktifkan.');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
+        return data.choices?.[0]?.message?.content || 'Model tidak mengembalikan jawaban.';
     }
 
     if (activeProvider === 'GEMINI') {
-        return askGemini(chatId, finalPrompt, base64Media, mimeTypeMedia, sourceMessageId);
-    }
+        const contents = history.map(h => ({
+            role: h.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: h.content }]
+        }));
 
-    if (activeProvider === 'OPENAI') {
-        return askOpenAI(chatId, finalPrompt, base64Media, mimeTypeMedia);
-    }
+        const parts = [{ text: finalPrompt }];
+        if (base64Media) {
+            parts.push({ inline_data: { mime_type: mimeTypeMedia || 'image/jpeg', data: base64Media } });
+        }
+        contents.push({ role: 'user', parts });
 
-    throw new Error('Provider AI tidak dikenal.');
-}
-
-async function processAIMessage(msg, finalPrompt, base64Media, mimeTypeMedia) {
-    const chatId = String(msg.chat.id);
-
-    if (!activeProvider) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            '⚙️ Otak AI belum dipilih. Aktifkan Gemini atau GPT dari panel kontrol dulu.'
-        );
-        return;
-    }
-
-    const stopRecordingPresence = startRecordingPresence(chatId);
-
-    try {
-        const response = await askAI(
-            chatId,
-            finalPrompt,
-            base64Media,
-            mimeTypeMedia,
-            msg.message_id
-        );
-
-        const rawResponse = cleanText(response) || '😭 AI nggak menghasilkan jawaban kali ini.';
-
-        pushHistory(chatId, 'user', finalPrompt);
-        pushHistory(chatId, 'assistant', rawResponse);
-
-        await sendReply(bot, msg.chat.id, rawResponse, {
-            reply_to_message_id: msg.message_id
+        const systemInstructionText = typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt);
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(activeApiKey)}`;
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ system_instruction: { parts: [{ text: systemInstructionText }] }, contents })
         });
-    } catch (error) {
-        console.error('[AI CORE ERROR]', safeError(error));
 
-        // Tidak pernah mengirim detail error API/token/limit ke Telegram.
-        await sendReply(
-            bot,
-            msg.chat.id,
-            '😵 Server AI lagi penuh sebentar. Coba kirim lagi ya.',
-            { reply_to_message_id: msg.message_id }
-        );
-    } finally {
-        stopRecordingPresence();
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error?.message || `Gemini HTTP ${res.status}`);
+        return data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'Model tidak mengembalikan jawaban.';
     }
+
+    throw new Error(`Provider tidak dikenal: ${activeProvider}`);
 }
 
+// ============================================================
+// CALLBACK BUTTON ENGINE
+// ============================================================
 bot.on('callback_query', async (query) => {
     const data = String(query.data || '');
     const chatId = String(query.message?.chat?.id || '');
 
     try {
         await bot.answerCallbackQuery(query.id);
-
         if (!chatId || !data.startsWith('ask|')) return;
 
         const action = data.slice(4).trim();
@@ -681,145 +420,185 @@ bot.on('callback_query', async (query) => {
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
             `Permintaan pengguna dari tombol:\n${action}`;
 
-        await processAIMessage(
-            query.message,
-            finalPrompt,
-            null,
-            null
+        await sendReply(
+            bot,
+            chatId,
+            `<i>your selected:</i> ${action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
+            { reply_to_message_id: query.message?.message_id }
         );
-    } catch (error) {
-        console.error('[CALLBACK ERROR]', safeError(error));
-        if (chatId) {
+
+        const stopRecordingPresence = startRecordingPresence(chatId);
+        let response;
+        try {
+            response = await askAI(chatId, finalPrompt, null, null);
+        } finally {
+            stopRecordingPresence();
+        }
+
+        let rawResponse = cleanText(response);
+
+        // FITUR GAMBAR: Hanya dikirim jika ada tag [IMAGE: ...]
+        let imageToSent = null;
+        const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
+        const imgMatch = rawResponse.match(imageRegex);
+        if (imgMatch) {
+            imageToSent = imgMatch[1];
+            rawResponse = rawResponse.replace(imageRegex, '').trim();
+        }
+
+        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+        rawResponse = rawResponse.replace(buttonRegex, '').trim();
+
+        if (!rawResponse) rawResponse = '😭 AI nggak menghasilkan jawaban kali ini.';
+
+        pushHistory(chatId, 'user', finalPrompt);
+        pushHistory(chatId, 'assistant', rawResponse);
+
+        let extraOptions = { reply_to_message_id: query.message?.message_id };
+        if (imageToSent) {
             try {
-                await sendReply(bot, chatId, '😵 Server AI lagi penuh sebentar. Coba lagi.');
-            } catch {}
+                await bot.sendPhoto(chatId, imageToSent);
+            } catch (e) {
+                console.error('[GAMBAR CALLBACK GAGAL]', e.message);
+            }
+        }
+        await sendReply(bot, chatId, rawResponse, extraOptions);
+
+    } catch (error) {
+        if (chatId) {
+            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi AI lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
         }
     }
 });
 
 bot.on('message', async (msg) => {
     const text = cleanText(msg.text || msg.caption || '');
-
     if (!text && !getMediaFromMessage(msg)) return;
     if (isCommand(text)) return;
 
     const chatId = String(msg.chat.id);
-
     if (aiMutedChats.has(chatId)) return;
     if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
 
     try {
-        const mediaResult = await buildMediaPrompt(
-            msg,
-            text || '[Sistem: Pengguna mengirim media tanpa caption.]'
-        );
+        const stopRecordingPresence = startRecordingPresence(chatId);
 
-        const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-        const finalPrompt =
-            `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
-
-        await processAIMessage(
-            msg,
-            finalPrompt,
-            mediaResult.base64Media,
-            mediaResult.mimeTypeMedia
-        );
-    } catch (error) {
-        console.error('[MESSAGE ERROR]', safeError(error));
+        let response;
         try {
-            await sendReply(bot, msg.chat.id, '😵 Server AI lagi penuh sebentar. Coba kirim lagi ya.', {
-                reply_to_message_id: msg.message_id
-            });
-        } catch {}
+            const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
+            const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
+            const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
+            response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
+        } finally {
+            stopRecordingPresence();
+        }
+
+        let rawResponse = cleanText(response);
+        if (aiMutedChats.has(chatId)) return;
+
+        // Tangkap Tag Gambar
+        let imageToSent = null;
+        const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
+        const imgMatch = rawResponse.match(imageRegex);
+        if (imgMatch) {
+            imageToSent = imgMatch[1];
+            rawResponse = rawResponse.replace(imageRegex, '').trim();
+        }
+
+        // Parse Dynamic Buttons
+        let inline_keyboard = [];
+        const buttonRegex = /\[BUTTONS:\s*(\[.*?\])\s*\]/is;
+        const match = rawResponse.match(buttonRegex);
+
+        if (match) {
+            try {
+                const aiButtons = JSON.parse(match[1]);
+                const validButtons = [];
+                if (Array.isArray(aiButtons)) {
+                    for (const original of aiButtons) {
+                        if (!original || typeof original !== 'object') continue;
+                        const text = String(original.text || '').trim();
+                        const url = String(original.url || '').trim();
+                        const callbackData = String(original.callback_data || '').trim();
+
+                        if (!text) continue;
+                        if (callbackData && callbackData.startsWith('ask|')) {
+                            let safeCallback = callbackData;
+                            if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
+                                safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
+                            }
+                            validButtons.push({ text, callback_data: safeCallback });
+                            continue;
+                        }
+                        if (url && /^https?:\/\/\S+$/i.test(url)) {
+                            validButtons.push({ text, url });
+                        }
+                        if (validButtons.length >= 2) break;
+                    }
+                }
+
+                if (validButtons.length > 0) {
+                    inline_keyboard = [validButtons.slice(0, 2)];
+                }
+                rawResponse = rawResponse.replace(buttonRegex, '').trim();
+            } catch (error) {
+                console.error('[BUTTON PARSER ERROR]', error.message);
+                rawResponse = rawResponse.replace(buttonRegex, '').trim();
+                inline_keyboard = [];
+            }
+        }
+
+        pushHistory(chatId, 'user', text || '[Media]');
+        pushHistory(chatId, 'assistant', rawResponse);
+
+        let extraOptions = { reply_to_message_id: msg.message_id };
+        if (inline_keyboard.length > 0) {
+            extraOptions.reply_markup = { inline_keyboard };
+        }
+
+        if (imageToSent) {
+            try {
+                await bot.sendPhoto(chatId, imageToSent);
+            } catch (e) {
+                console.error('[GAMBAR CHAT GAGAL]', e.message);
+            }
+        }
+
+        await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+
+    } catch (error) {
+        const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
+        console.error('[AI CORE ERROR]', realError);
+        await sendReply(bot, msg.chat.id, `VGen Engine terkendala.\n\nDetail: ${realError}`);
     }
 });
 
+// ============================================================
+// EXPRESS DEPLOYMENT API
+// ============================================================
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-// Public config hanya berisi email + model. API key TIDAK PERNAH dikirim ke browser.
-app.get('/public-config', (req, res) => {
-    res.json({
-        ok: true,
-        provider: activeProvider,
-        gemini: {
-            accounts: secretConfig.geminiAccounts.map(a => ({ email: a.email })),
-            models: [...GEMINI_MODELS],
-            currentAccountIndex: geminiAccountIndex,
-            currentModelIndex: geminiModelIndex
-        },
-        openai: {
-            accounts: (secretConfig.openaiAccounts || []).map(a => ({ email: a.email })),
-            model: OPENAI_MODEL
-        }
-    });
-});
-
-// Aktivasi provider dari panel HTML.
-// Setelah sekali dipilih, state tersimpan dan otomatis aktif lagi setelah restart.
-app.post('/activate-provider', (req, res) => {
-    const provider = String(req.body?.provider || '').toUpperCase();
-
-    if (!['GEMINI', 'OPENAI'].includes(provider)) {
-        return res.status(400).json({ ok: false, error: 'Provider tidak valid.' });
-    }
-
-    if (provider === 'GEMINI' && !secretConfig.geminiAccounts?.length) {
-        return res.status(500).json({ ok: false, error: 'Gemini server-side config kosong.' });
-    }
-
-    if (provider === 'OPENAI' && !secretConfig.openaiAccounts?.[0]?.key) {
-        return res.status(500).json({ ok: false, error: 'OpenAI server-side config kosong.' });
-    }
-
-    activeProvider = provider;
-    saveDb();
-
-    res.json({
-        ok: true,
-        provider: activeProvider,
-        model: provider === 'GEMINI'
-            ? GEMINI_MODELS[geminiModelIndex]
-            : OPENAI_MODEL
-    });
-});
-
-// Kompatibilitas dengan panel lama: API key dari browser sengaja diabaikan.
-app.post('/deploy-key', (req, res) => {
-    const provider = String(req.body?.provider || '').toUpperCase();
-
-    if (!['GEMINI', 'OPENAI'].includes(provider)) {
-        return res.status(400).json({ ok: false, error: 'Provider tidak valid.' });
-    }
-
-    activeProvider = provider;
-    saveDb();
-
-    res.json({
-        success: true,
-        provider: activeProvider,
-        message: 'Provider aktif. API key tetap disimpan server-side.'
-    });
-});
-
 app.get('/', (req, res) => {
-    const target = activeProvider === 'GEMINI' ? currentGeminiTarget() : null;
+    res.json({ ok: true, service: 'VGen AI Telegram Bot', provider: activeProvider, model: activeModel, timeWIB: nowWIB() });
+});
 
-    res.json({
-        ok: true,
-        service: 'VGen AI Telegram Bot',
-        provider: activeProvider,
-        model: target?.model || (activeProvider === 'OPENAI' ? OPENAI_MODEL : null),
-        timeWIB: nowWIB()
-    });
+app.post('/deploy-key', (req, res) => {
+    const { apiKey, provider, model, baseUrl } = req.body || {};
+    if (!apiKey || !model) {
+        return res.status(400).json({ error: 'API Key atau Model tidak boleh kosong!' });
+    }
+    activeApiKey = apiKey;
+    activeProvider = String(provider || 'OPENAI').toUpperCase();
+    activeModel = model;
+    activeBaseUrl = baseUrl || null;
+
+    db.apiConfig = { apiKey: activeApiKey, provider: activeProvider, model: activeModel, ...(activeBaseUrl ? { baseUrl: activeBaseUrl } : {}) };
+    saveDb();
+    res.json({ success: true, message: `Sukses terhubung ke model: ${activeModel}` });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ VGEN AI TELEGRAM ONLINE di port ${PORT}`);
-    console.log(`🤖 Provider saat startup: ${activeProvider || 'BELUM DIAKTIFKAN'}`);
-    if (activeProvider === 'GEMINI') {
-        const t = currentGeminiTarget();
-        console.log(`🔄 Gemini failover: ${t.email} / ${t.model}`);
-    }
 });
