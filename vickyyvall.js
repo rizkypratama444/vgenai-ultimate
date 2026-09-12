@@ -531,6 +531,7 @@ function parseDynamicButtons(rawText) {
             const buttonText = String(original.text || '').trim().replace(/\s+/g, ' ').slice(0, 48);
             const url = String(original.url || '').trim();
             const callbackData = String(original.callback_data || '').trim();
+            
             if (!buttonText || /^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
 
             if (callbackData) {
@@ -544,6 +545,13 @@ function parseDynamicButtons(rawText) {
 
     const cleanedText = (text.slice(0, start) + text.slice(end)).replace(/\]\s*$/, '').trim();
     return { text: cleanedText, buttons: validButtons.slice(0, 4) };
+}
+
+function randomButtonCount() {
+    const roll = Math.random();
+    if (roll < 0.08) return 4;
+    if (roll < 0.38) return 2;
+    return 1 + Math.floor(Math.random() * 2);
 }
 
 function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
@@ -579,7 +587,6 @@ function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
     const count = Math.min(randomButtonCount(), pool.length);
     return pool.sort(() => Math.random() - 0.5).slice(0, count);
 }
-
 
 async function ensureAIButtons(chatId, userText, aiText, existingButtons, amTopic = false) {
     if (existingButtons.length) return existingButtons.slice(0, 4);
