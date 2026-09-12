@@ -221,34 +221,35 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
     const mediaUrl = 'https://ibb.co.com/s9tq563Y';
 
     try {
-        // Pake sendPhoto biar gambar dan teks gabung jadi satu (caption)
         await bot.sendPhoto(msg.chat.id, mediaUrl, {
             caption: text,
             parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: keyboard }
+            reply_markup: { inline_keyboard: keyboard },
+            reply_to_message_id: msg.message_id
         });
     } catch (error) {
-        // Fallback: Kalau link error/ngadat, bot gak bakal mati dan balik ngirim teks biasa
         await sendReply(bot, msg.chat.id, text, {
-            reply_markup: { inline_keyboard: keyboard }
+            reply_markup: { inline_keyboard: keyboard },
+            reply_to_message_id: msg.message_id
         });
     }
+
 });
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.');
+    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.', { reply_to_message_id: msg.message_id });
 });
 
 bot.onText(/^\/unmute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.');
+    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.', { reply_to_message_id: msg.message_id });
 });
 
 bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.');
+    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.', { reply_to_message_id: msg.message_id });
 });
 
 bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
@@ -256,9 +257,10 @@ bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
         `Status VGen AI\n` +
         `Provider: ${activeProvider || 'BELUM DISET'}\n` +
         `Model: ${activeModel || 'BELUM DISET'}\n` +
-        `Waktu WIB: ${nowWIB()}`
+        `Waktu WIB: ${nowWIB()}`,
+        { reply_to_message_id: msg.message_id }
     );
-});
+}); 
 
 async function downloadTelegramFile(fileId) {
     try {
@@ -484,10 +486,12 @@ bot.on('message', async (msg) => {
         const stopRecordingPresence = startRecordingPresence(chatId);
 
         let response;
-        try {
+                try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
+            // INJEKSI RAHASIA BIAR TOMBOL SELALU MUNCUL PAS DIBUTUHKAN
+            const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks [BUTTONS: ...] di akhir balasan. Bikin seseru mungkin dan biar AI lu sendiri yang mikir idenya!]`;
+            const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
             stopRecordingPresence();
@@ -512,8 +516,11 @@ bot.on('message', async (msg) => {
 
         if (match) {
             try {
-                const aiButtons = JSON.parse(match[1]);
+                // BERSIHIN FORMAT MARKDOWN NGAWUR DARI AI BIAR JSON GAK CRASH
+                let cleanJson = match[1].replace(/```(json)?/gi, '').replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
+                const aiButtons = JSON.parse(cleanJson);
                 const validButtons = [];
+
                 if (Array.isArray(aiButtons)) {
                     for (const original of aiButtons) {
                         if (!original || typeof original !== 'object') continue;
