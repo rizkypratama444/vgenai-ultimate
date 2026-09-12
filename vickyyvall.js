@@ -86,7 +86,24 @@ function pushHistory(chatId, role, content) {
 }
 
 function cleanText(value) {
-    return String(value || '').trim();
+    return normalizeChatOutput(String(value || ''));
+}
+
+function normalizeChatOutput(value) {
+    let text = String(value || '');
+
+    // Buang sisa tag/kurung penutup yang kadang ikut keluar dari model.
+    text = text.replace(/^\s*\]\s*$/gm, '');
+    text = text.replace(/\n\s*\]\s*$/g, '');
+
+    // Maksimal satu baris kosong antar-bait.
+    text = text.replace(/\n{3,}/g, '\n\n');
+    text = text.trim();
+
+    // Jika model memulai bait baru dengan huruf kecil, naikkan huruf pertamanya.
+    // Nama/brand yang sudah kapital tidak disentuh.
+    text = text.replace(/(^|\n\n)([a-zà-ÿ])/g, (_, prefix, ch) => prefix + ch.toUpperCase());
+    return text;
 }
 
 function nowWIB() {
@@ -445,7 +462,8 @@ function parseDynamicButtons(rawText) {
     const start = text.search(/\[BUTTONS\s*:/i);
     if (start === -1) return { text, buttons: [] };
 
-    let i = start + text.slice(start).match(/\[BUTTONS\s*:/i)[0].length;
+    const opener = text.slice(start).match(/\[BUTTONS\s*:/i)[0];
+    let i = start + opener.length;
     let depth = 0;
     let inString = false;
     let escaped = false;
@@ -463,50 +481,46 @@ function parseDynamicButtons(rawText) {
         if (ch === '[') depth++;
         else if (ch === ']') {
             depth--;
-            if (depth === 0) {
-                end = i + 1;
-                break;
-            }
+            if (depth === 0) { end = i + 1; break; }
         }
     }
 
     if (end === -1) {
-        // Jika AI mengirim tag rusak, bersihkan tag pembukanya agar tidak bocor ke chat.
         return { text: text.replace(/\[BUTTONS\s*:[\s\S]*$/i, '').trim(), buttons: [] };
     }
 
-    const payload = text.slice(start + text.slice(start).match(/\[BUTTONS\s*:/i)[0].length, end - 1).trim();
+    const payload = text.slice(start + opener.length, end - 1).trim();
     let parsed = [];
-    try {
-        parsed = JSON.parse(payload);
-    } catch (e) {
-        console.error('[BUTTON PARSER ERROR]', e.message);
-    }
+    try { parsed = JSON.parse(payload); }
+    catch (e) { console.error('[BUTTON PARSER ERROR]', e.message); }
 
     const validButtons = [];
     if (Array.isArray(parsed)) {
         for (const original of parsed) {
             if (!original || typeof original !== 'object') continue;
-            const buttonText = String(original.text || '').trim().slice(0, 64);
+            let buttonText = String(original.text || '').trim().replace(/\s+/g, ' ').slice(0, 64);
             const url = String(original.url || '').trim();
             const callbackData = String(original.callback_data || '').trim();
             if (!buttonText) continue;
 
+            // Tombol generik ini dilarang; biarkan AI membuat label yang spesifik.
+            if (/^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
+
             if (callbackData.startsWith('ask|')) {
                 let safeCallback = callbackData;
-                if (Buffer.byteLength(safeCallback, 'utf8') > 64) {
-                    safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, 64).toString('utf8');
+                while (Buffer.byteLength(safeCallback, 'utf8') > 64) {
+                    safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, Buffer.byteLength(safeCallback, 'utf8') - 1).toString('utf8');
                 }
                 validButtons.push({ text: buttonText, callback_data: safeCallback });
             } else if (url && /^https?:\/\/\S+$/i.test(url)) {
                 validButtons.push({ text: buttonText, url });
             }
-            if (validButtons.length >= 3) break;
+            if (validButtons.length >= 4) break;
         }
     }
 
     const cleanedText = (text.slice(0, start) + text.slice(end)).trim();
-    return { text: cleanedText, buttons: validButtons.slice(0, 3) };
+    return { text: cleanedText, buttons: validButtons.slice(0, 4) };
 }
 
 function parseGeneratedFiles(rawText) {
@@ -549,27 +563,6 @@ function parseGeneratedFiles(rawText) {
     }
 
     return { text, files: generated };
-}
-
-function collapseRelatedFilesToZip(result, userText) {
-    if (!result || !Array.isArray(result.files) || result.files.length < 2) return result;
-    if (result.files.some(f => f.type === 'zip')) return result;
-
-    const t = String(userText || '');
-    const looksLikeProject = /html|css|javascript|node\.?js|script|coding|kode|program|project|website|web|json|python|readme/i.test(t);
-    if (!looksLikeProject) return result;
-
-    const zipBuffer = createStoredZip(result.files);
-    if (zipBuffer.length > MAX_GENERATED_ZIP_BYTES) return result;
-
-    const base = sanitizeGeneratedFilename(
-        t.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60),
-        'vgen-project'
-    );
-    return {
-        text: result.text,
-        files: [{ type: 'zip', filename: `${base || 'vgen-project'}.zip`, buffer: zipBuffer }]
-    };
 }
 
 // CRC-32 untuk ZIP sederhana tanpa dependency tambahan.
@@ -652,46 +645,54 @@ function createStoredZip(files) {
     return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
-function buildFallbackButtons(userText, isAM = false, hasFiles = false) {
-    const t = String(userText || '').toLowerCase();
-    const buttons = [];
-
-    if (isAM) {
-        buttons.push({ text: '💎 Order AM Prem', url: 'https://t.me/vickyyvall' });
-        buttons.push({ text: '✨ Fitur AM Prem', callback_data: 'ask|jelaskan fitur dan keuntungan Alight Motion Premium' });
-        return buttons;
-    }
-
-    if (hasFiles || /html|css|javascript|node\.?js|script|kode|coding|program|project|json|python|readme/i.test(t)) {
-        buttons.push({ text: '🛠️ Revisi kode', callback_data: 'ask|revisi atau sempurnakan file yang baru dibuat' });
-        buttons.push({ text: '📦 Jadikan ZIP', callback_data: 'ask|jadikan project ini ZIP lengkap dengan file yang diperlukan' });
-        return buttons;
-    }
-
-    if (/persija|persib|bola|sepak ?bola/i.test(t)) {
-        buttons.push({ text: '⚽ Bahas lagi', callback_data: 'ask|lanjut bahas topik sepak bola ini dengan lebih detail' });
-        return buttons;
-    }
-
-    buttons.push({ text: '💬 Lanjut chat', callback_data: 'ask|lanjutkan pembahasan dari jawaban tadi' });
-    return buttons;
+function shouldAutoZipGeneratedFiles(files) {
+    if (!Array.isArray(files) || files.length < 2) return false;
+    const projectExts = new Set(['.html','.htm','.css','.js','.mjs','.cjs','.ts','.tsx','.jsx','.json','.py','.php','.java','.xml','.yml','.yaml','.md','.txt','.env']);
+    return files.every(file => {
+        const name = String(file.filename || '').toLowerCase();
+        if (name === 'readme' || name.startsWith('readme.')) return true;
+        const dot = name.lastIndexOf('.');
+        return dot >= 0 && projectExts.has(name.slice(dot));
+    });
 }
 
-async function sendGeneratedDocuments(chatId, files, captionText = '', extra = {}) {
-    for (const file of files) {
-        try {
-            const safeCaption = String(captionText || '').trim();
-            const caption = safeCaption.slice(0, 1024) || (file.type === 'zip'
-                ? `📦 <b>${file.filename}</b>\nProject ZIP siap dikirim.`
-                : `📄 <b>${file.filename}</b>\nFile lengkap sudah siap.`);
+function mimeForFilename(filename) {
+    const ext = String(filename || '').toLowerCase().split('.').pop();
+    const map = {
+        html: 'text/html', htm: 'text/html', css: 'text/css', js: 'application/javascript',
+        mjs: 'application/javascript', cjs: 'application/javascript', ts: 'text/typescript',
+        json: 'application/json', md: 'text/markdown', txt: 'text/plain', py: 'text/x-python',
+        xml: 'application/xml', yml: 'text/yaml', yaml: 'text/yaml', php: 'text/plain',
+        java: 'text/plain', env: 'text/plain'
+    };
+    return map[ext] || 'application/octet-stream';
+}
 
-            await bot.sendDocument(chatId, file.buffer, {
-                ...extra,
-                caption,
-                parse_mode: 'HTML'
-            }, {
+async function sendGeneratedDocuments(chatId, files, extra = {}) {
+    if (!Array.isArray(files) || files.length === 0) return;
+
+    let outgoing = files;
+    if (shouldAutoZipGeneratedFiles(files)) {
+        const zipBuffer = createStoredZip(files);
+        if (zipBuffer.length <= MAX_GENERATED_ZIP_BYTES) {
+            outgoing = [{
+                type: 'zip',
+                filename: `vgen-project-${Date.now()}.zip`,
+                buffer: zipBuffer,
+                bundledFiles: files.map(f => f.filename)
+            }];
+        }
+    }
+
+    for (const file of outgoing) {
+        try {
+            const caption = String(extra.caption || (file.type === 'zip'
+                ? `📦 <b>${file.filename}</b>\nProject ZIP siap. Semua file yang saling berhubungan sudah disatukan di sini.`
+                : `📄 <b>${file.filename}</b>\nFile lengkap sudah siap.`));
+            const options = { ...extra, caption, parse_mode: 'HTML' };
+            await bot.sendDocument(chatId, file.buffer, options, {
                 filename: file.filename,
-                contentType: file.type === 'zip' ? 'application/zip' : 'text/plain'
+                contentType: file.type === 'zip' ? 'application/zip' : mimeForFilename(file.filename)
             });
         } catch (e) {
             console.error('[SEND GENERATED FILE ERROR]', e.message);
@@ -708,17 +709,32 @@ bot.on('callback_query', async (query) => {
     const chatId = String(query.message?.chat?.id || '');
 
     try {
-        await bot.answerCallbackQuery(query.id);
-        if (!chatId || !data.startsWith('ask|')) return;
+        if (!chatId || !data.startsWith('ask|')) {
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
 
         const action = data.slice(4).trim();
-        if (!action) return;
+        if (!action) {
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
+
+        // Tekan tombol = langsung dianggap sebagai pesan pengguna ke AI.
+        await bot.answerCallbackQuery(query.id, { text: '⏳ AI lagi jawab...' });
+        await bot.sendChatAction(chatId, 'typing').catch(() => {});
 
         const finalPrompt =
-            `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
-            `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
-            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
-            `Permintaan pengguna dari tombol:\n${action}`;
+            `[INFO SISTEM: Pengguna menekan tombol interaktif.]
+` +
+            `[INFO SISTEM: Isi tombol adalah permintaan pengguna dan HARUS dijawab langsung seperti pesan biasa.]
+` +
+            `[INFO SISTEM: Jangan menjelaskan bahwa ini berasal dari callback/tombol.]
+` +
+            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]
+
+` +
+            `${action}`;
 
         const stopRecordingPresence = startRecordingPresence(chatId);
         let response;
@@ -737,51 +753,55 @@ bot.on('callback_query', async (query) => {
             rawResponse = rawResponse.replace(imageRegex, '').trim();
         }
 
-        let generatedResult = parseGeneratedFiles(rawResponse);
-        generatedResult = collapseRelatedFilesToZip(generatedResult, action);
+        const generatedResult = parseGeneratedFiles(rawResponse);
         rawResponse = generatedResult.text;
-
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        let inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
 
-        const amTopic = /alight\s*motion|am\s*prem|am\s*premium/i.test(action);
-        const amPremiumImage = 'https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png';
-        if (!imageToSent && amTopic) imageToSent = amPremiumImage;
-        if (!inline_keyboard.length && (amTopic || generatedResult.files.length || rawResponse)) {
-            inline_keyboard = [buildFallbackButtons(action, amTopic, generatedResult.files.length > 0)];
-        }
+        if (!rawResponse) rawResponse = generatedResult.files.length
+            ? '📦 File-nya sudah siap.'
+            : '😭 AI nggak menghasilkan jawaban kali ini.';
 
-        if (!rawResponse) {
-            rawResponse = generatedResult.files.length
-                ? '📦 file-nya sudah siap, cek dokumen yang baru dikirim.'
-                : '😭 ai nggak menghasilkan jawaban kali ini.';
-        }
-
-        pushHistory(chatId, 'user', finalPrompt);
+        pushHistory(chatId, 'user', action);
         pushHistory(chatId, 'assistant', rawResponse);
 
-        const extra = { reply_to_message_id: query.message?.message_id };
-        if (inline_keyboard.length) extra.reply_markup = { inline_keyboard };
+        const markup = inline_keyboard.length ? { reply_markup: { inline_keyboard } } : {};
+        const extraOptions = { reply_to_message_id: query.message?.message_id, ...markup };
 
-        if (generatedResult.files.length > 0) {
-            // SATU GELEMBUNG: dokumen di atas, chat/caption + tombol menempel di bawah dokumen.
-            await sendGeneratedDocuments(chatId, generatedResult.files, rawResponse, extra);
-        } else if (imageToSent) {
-            // SATU GELEMBUNG: gambar + chat + tombol.
-            await bot.sendPhoto(chatId, imageToSent, {
-                ...extra,
-                caption: rawResponse.slice(0, 1024),
-                parse_mode: 'HTML'
-            });
-        } else {
-            await sendReply(bot, chatId, rawResponse, extra);
+        // Foto + caption + tombol = SATU bubble.
+        if (imageToSent) {
+            try {
+                await bot.sendPhoto(chatId, imageToSent, {
+                    caption: convertMarkdownToHTML(rawResponse).slice(0, 1024),
+                    parse_mode: 'HTML',
+                    ...markup,
+                    reply_to_message_id: query.message?.message_id
+                });
+                if (generatedResult.files.length > 0) {
+                    await sendGeneratedDocuments(chatId, generatedResult.files, markup);
+                }
+            } catch (e) {
+                console.error('[GAMBAR CALLBACK GAGAL]', e.message);
+                if (generatedResult.files.length > 0) await sendGeneratedDocuments(chatId, generatedResult.files, { ...markup, caption: rawResponse });
+                else await sendReply(bot, chatId, rawResponse, extraOptions);
+            }
+            return;
         }
+
+        // Dokumen/ZIP + caption + tombol = SATU bubble. Caption berada di bawah file.
+        if (generatedResult.files.length > 0) {
+            await sendGeneratedDocuments(chatId, generatedResult.files, { ...markup, caption: rawResponse });
+            return;
+        }
+
+        await sendReply(bot, chatId, rawResponse, extraOptions);
 
     } catch (error) {
         if (chatId) {
-            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi ai lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
+            try { await sendReply(bot, chatId, '😭 Tombolnya kepencet dan request-nya masuk, tapi AI lagi ngadat. Coba pencet lagi.'); } catch {}
         }
+        console.error('[BUTTON CALLBACK ERROR]', error.message || error);
     }
 });
 
@@ -796,23 +816,20 @@ bot.on('message', async (msg) => {
 
     try {
         const stopRecordingPresence = startRecordingPresence(chatId);
-
         let response;
-                try {
+        try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            // INJEKSI OUTPUT ENGINE: tombol, AM Prem, dan delivery file harus benar-benar dikirim engine.
-            const buttonReminder = `[INFO SISTEM: Untuk jawaban yang punya opsi lanjutan, WAJIB buat 1-3 tombol [BUTTONS] dengan JSON VALID. Untuk Alight Motion Premium/AM Prem WAJIB buat CHAT + [IMAGE: https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png] + minimal 1 tombol order ke https://t.me/vickyyvall]. Jika membuat satu file gunakan [FILE: filename="..."]...[/FILE]. Jika membuat 2+ file yang saling berhubungan dalam satu project, WAJIB gunakan [ZIP: filename="...zip"] dengan beberapa [ZIP_FILE: filename="..."]...[/ZIP_FILE]. Caption/chat harus berada sebelum tag file. Jangan taruh tag mesin di paragraf biasa.`;
+            const buttonReminder = `[INFO SISTEM: Buat 1-4 tombol AI DINAMIS bila balasan layak diberi opsi. AI sendiri yang mengarang topik, teks singkat, emoji, dan callback_data. DILARANG memakai tombol generik "Lanjut chat". Untuk tombol yang harus membuka halaman, gunakan {"text":"...","url":"https://..."}; untuk tombol yang memicu jawaban AI gunakan {"text":"...","callback_data":"ask|..."}. Jika ada URL yang diketahui dari konteks, pertimbangkan tombol URL singkat yang relevan. Untuk Alight Motion Premium/AM Prem, WAJIB sertakan [IMAGE: https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png] dan tombol URL order ke https://t.me/vickyyvall bila relevan. Jika membuat satu file, gunakan [FILE: filename="..."]...[/FILE]. Jika membuat beberapa file yang saling berhubungan sebagai satu project, gunakan [ZIP: filename="...zip"] dengan beberapa [ZIP_FILE: filename="..."]...[/ZIP_FILE] di dalamnya. Jangan taruh tag mesin di paragraf chat.]`;
             const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
             stopRecordingPresence();
         }
 
-        let rawResponse = cleanText(response);
         if (aiMutedChats.has(chatId)) return;
 
-        // Tangkap Tag Gambar
+        let rawResponse = cleanText(response);
         let imageToSent = null;
         const amTopic = /(?:alight\s*motion|am\s*prem|am\s*premium|alight\s*motion\s*premium)/i.test(text || '');
         const amPremiumImage = 'https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png';
@@ -824,54 +841,46 @@ bot.on('message', async (msg) => {
         }
         if (!imageToSent && amTopic) imageToSent = amPremiumImage;
 
-        // Parse FILE / ZIP sebelum BUTTONS agar tag nested tidak bocor ke chat.
-        let generatedResult = parseGeneratedFiles(rawResponse);
-        generatedResult = collapseRelatedFilesToZip(generatedResult, text);
+        const generatedResult = parseGeneratedFiles(rawResponse);
         rawResponse = generatedResult.text;
-
-        // Parser tombol: bracket-aware + validasi JSON + sampai 3 tombol.
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        let inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
 
-        // Fallback tombol supaya fitur tidak hilang walaupun model lupa menulis tag.
-        if (!inline_keyboard.length) {
-            inline_keyboard = [buildFallbackButtons(text, amTopic, generatedResult.files.length > 0)];
-        }
-
+        // Jika model masih gagal membuat tombol, jangan pasang tombol "Lanjut chat".
+        // Hanya gunakan keyboard yang benar-benar dibuat AI.
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', rawResponse);
 
-        let extraOptions = { reply_to_message_id: msg.message_id, reply_markup: { inline_keyboard } };
+        const markup = inline_keyboard.length ? { reply_markup: { inline_keyboard } } : {};
+        const extraOptions = { reply_to_message_id: msg.message_id, ...markup };
 
-        if (!rawResponse) {
-            rawResponse = generatedResult.files.length
-                ? '📦 file-nya sudah siap, cek dokumen yang baru dikirim.'
-                : '😭 ai nggak menghasilkan jawaban kali ini.';
-        }
-
-        if (generatedResult.files.length > 0) {
-            // SATU GELEMBUNG: dokumen/ZIP di atas, caption/chat + tombol tepat di bawahnya.
-            await sendGeneratedDocuments(
-                msg.chat.id,
-                generatedResult.files,
-                rawResponse,
-                extraOptions
-            );
-        } else if (imageToSent) {
-            // SATU GELEMBUNG: gambar AM Prem + chat + tombol jadi satu pesan.
+        // AM Premium: gambar + chat + tombol dalam SATU bubble foto.
+        if (imageToSent) {
             try {
                 await bot.sendPhoto(msg.chat.id, imageToSent, {
-                    ...extraOptions,
-                    caption: rawResponse.slice(0, 1024),
-                    parse_mode: 'HTML'
+                    caption: convertMarkdownToHTML(rawResponse).slice(0, 1024),
+                    parse_mode: 'HTML',
+                    ...markup,
+                    reply_to_message_id: msg.message_id
                 });
             } catch (e) {
                 console.error('[GAMBAR CHAT GAGAL]', e.message);
-                await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+                if (generatedResult.files.length === 0) {
+                    await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+                }
             }
+        } else if (generatedResult.files.length > 0) {
+            // ZIP/dokumen + caption chat + tombol = SATU bubble dokumen.
+            await sendGeneratedDocuments(msg.chat.id, generatedResult.files, { ...markup, caption: rawResponse });
         } else {
             await sendReply(bot, msg.chat.id, rawResponse, extraOptions);
+        }
+
+        // Kalau AM/image sekaligus punya file, file tetap dikirim sebagai dokumen terpisah.
+        // Kalau tidak ada image, dokumen sudah dikirim di cabang di atas.
+        if (imageToSent && generatedResult.files.length > 0) {
+            await sendGeneratedDocuments(msg.chat.id, generatedResult.files, { ...markup, caption: rawResponse });
         }
 
     } catch (error) {
