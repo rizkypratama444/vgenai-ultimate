@@ -97,33 +97,11 @@ function normalizeChatOutput(value) {
     text = text.replace(/^\s*\]\s*$/gm, '');
     text = text.replace(/(^|\n)\s*\]\s*(?=\n|$)/g, '$1');
     text = text.replace(/\]\s*$/g, '');
+    
+    // Jangan ancurin enter/baris baru bawaan AI, cukup batesin max 2 enter beruntun
     text = text.replace(/\n{3,}/g, '\n\n').trim();
 
-    const paragraphs = text.split(/\n\n+/);
-    const protectedList = ['Alight Motion Premium', 'AM Prem', 'TikTok', 'Instagram', 'Telegram', 'Persija', 'VGen AI', 'vickyyvall', 'JavaScript', 'Node.js', 'HTML', 'CSS', 'JSON', 'Python', 'Roblox', 'YouTube'];
-
-    const fixParagraph = (paragraph) => {
-        let out = paragraph.trim();
-        if (!out) return '';
-
-        const saved = [];
-        out = out.replace(new RegExp(protectedList.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'), (match) => {
-            const token = `__VGENPROTECT${saved.length}__`;
-            saved.push(match);
-            return token;
-        });
-
-        out = out.replace(/([.!?])([ \t]+)([A-ZÀ-Ý])(?=[a-zà-ÿ])/g, (m, punct, space, ch) => punct + space + ch.toLowerCase());
-        out = out.replace(/^([a-zà-ÿ])/, (_, ch) => ch.toUpperCase());
-
-        saved.forEach((word, index) => {
-            out = out.replace(`__VGENPROTECT${index}__`, word);
-        });
-        return out;
-    };
-
-    text = paragraphs.map(fixParagraph).filter(Boolean).join('\n\n');
-    return text.trim();
+    return text;
 }
 
 
@@ -818,17 +796,17 @@ bot.on('callback_query', async (query) => {
         await bot.answerCallbackQuery(query.id, { text: '⏳ AI lagi jawab...' });
         await bot.sendChatAction(chatId, 'typing').catch(() => {});
 
-        const finalPrompt =
-            `[INFO SISTEM: Pengguna menekan tombol interaktif.]
-` +
-            `[INFO SISTEM: Isi tombol adalah permintaan pengguna dan HARUS dijawab langsung seperti pesan biasa.]
-` +
-            `[INFO SISTEM: Jangan menjelaskan bahwa ini berasal dari callback/tombol.]
-` +
-            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]
+        let extraContext = '';
+        if (/upgrade ai|limit/i.test(action)) {
+            extraContext = `[INFO SISTEM: Pengguna bertanya tentang UPGRADE AI / LIMIT. Jawab dengan SANGAT RAPIH menggunakan paragraf, enter, dan list (bullet points). Gunakan bold standar (*teks*) pada judul. Jelaskan secara profesional namun asik tentang keanggotaan "VGen AI+", apa saja benefit tanpa batasnya, dan cara daftarnya.]\n`;
+        }
 
-` +
-            `${action}`;
+        const finalPrompt =
+            `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
+            `[INFO SISTEM: Jawab langsung permintaan pengguna. Wajib format rapih pakai baris baru (enter)!]\n` +
+            `[INFO SISTEM: Di AKHIR jawaban, WAJIB buat 2-4 tombol dinamis (JSON [BUTTONS: ...]) yang topiknya NGARANG SENDIRI & BARU sesuai konteks obrolan! JANGAN pakai topik default terus!]\n` +
+            `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
+            `${extraContext}${action}`;
 
         const stopRecordingPresence = startRecordingPresence(chatId);
         let response;
@@ -915,7 +893,12 @@ bot.on('message', async (msg) => {
         try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const buttonReminder = `[INFO SISTEM MUTLAK: SETIAP BALASAN NORMAL WAJIB memiliki 1-4 tombol rekomendasi AI DINAMIS. Jumlah harus bervariasi; 4 hanya sesekali, jangan terus 4. AI sendiri WAJIB mengarang teks pendek, emoji, topik, dan maksud tombol berdasarkan percakapan. DILARANG memakai "Lanjut chat" atau label generik. Untuk tombol yang memicu jawaban AI gunakan {"text":"...","callback_data":"ask|..."}; untuk membuka halaman gunakan {"text":"...","url":"https://..."}. Tombol maksimal 48 karakter dan harus singkat. Jika ada URL yang diberikan user atau memang diketahui dari konteks, boleh buat tombol URL. Jika topik Alight Motion Premium/AM Prem muncul, WAJIB sertakan [IMAGE: https://ibb.co.com/Tx5ND8rF] dan buat tombol order URL https://t.me/vickyyvall ATAUPUN WhatsApp +62 895-4109-75149. Jika membuat satu file, gunakan [FILE: filename="..."]...[/FILE]. Jika membuat beberapa file yang saling berhubungan, gunakan [ZIP: filename="...zip"] dengan [ZIP_FILE] lengkap. Jangan taruh tag mesin di paragraf chat. Jangan pernah keluarkan kurung ] sendirian.]`;
+            const buttonReminder = `[INFO SISTEM MUTLAK: 
+1. FORMAT RAPIH: WAJIB gunakan paragraf, baris baru (enter), dan list agar rapi. Gunakan bold standar (*teks*).
+2. TOMBOL DINAMIS: Di AKHIR jawaban, WAJIB buat 2-4 tombol rekomendasi lanjutan format JSON [BUTTONS: [{"text":"(Emoji) Topik Ngarang 1","callback_data":"ask|..."}]]. Topiknya WAJIB BARU dan NGARANG SENDIRI mengikuti keseruan obrolan! DILARANG keras mengulang tombol default!
+3. ALIGHT MOTION: Jika membahas Alight Motion/AM, tawarkan AM Prem ke Telegram @vickyyvall dan WAJIB sertakan tag [IMAGE: https://ibb.co.com/Tx5ND8rF] di dalam jawaban.
+4. FILE/ZIP: Jika disuruh bikin kode/file gunakan [FILE: filename="..."]...[/FILE] atau [ZIP: filename="...zip"].]`;
+
             const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
@@ -926,8 +909,10 @@ bot.on('message', async (msg) => {
 
         let rawResponse = cleanText(response);
         let imageToSent = null;
-        const amTopic = /(?:alight\s*motion|am\s*prem|am\s*premium|alight\s*motion\s*premium)/i.test(text || '') || /ibb\.co\/xQvP6qy/i.test(text || '');
-        const amPremiumImage = 'https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png';
+        const amTopic = /\b(am|alight\s*motion|am\s*prem|am\s*premium)\b/i.test(text || '') || /ibb\.co\/xQvP6qy/i.test(text || '');
+        const amPremiumImage = 'https://ibb.co.com/Tx5ND8rF';
+
+        
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
         if (imgMatch) {
