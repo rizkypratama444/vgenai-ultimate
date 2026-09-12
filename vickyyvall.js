@@ -92,18 +92,44 @@ function cleanText(value) {
 function normalizeChatOutput(value) {
     let text = String(value || '');
 
-    // Buang sisa tag/kurung penutup yang kadang ikut keluar dari model.
+    // Buang artefak tag mesin/kurung penutup yang bocor ke gelembung chat.
     text = text.replace(/^\s*\]\s*$/gm, '');
-    text = text.replace(/\n\s*\]\s*$/g, '');
+    text = text.replace(/(^|\n)\s*\]\s*(?=\n|$)/g, '$1');
+    text = text.replace(/\[\/BUTTONS\]\s*$/i, '');
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
 
-    // Maksimal satu baris kosong antar-bait.
-    text = text.replace(/\n{3,}/g, '\n\n');
-    text = text.trim();
+    // Gaya kapital VGen: awal bait kapital, tetapi setelah titik/koma di bait yang sama
+    // tidak dipaksa kapital. Nama/brand/judul penting tetap dibiarkan apa adanya.
+    const paragraphs = text.split(/\n\n+/);
+    const protectedList = ['Alight Motion Premium', 'AM Prem', 'TikTok', 'Instagram', 'Telegram', 'Persija', 'VGen AI', 'vickyyvall', 'JavaScript', 'Node.js', 'HTML', 'CSS', 'JSON', 'Python', 'Roblox', 'YouTube'];
 
-    // Jika model memulai bait baru dengan huruf kecil, naikkan huruf pertamanya.
-    // Nama/brand yang sudah kapital tidak disentuh.
-    text = text.replace(/(^|\n\n)([a-zà-ÿ])/g, (_, prefix, ch) => prefix + ch.toUpperCase());
-    return text;
+    const fixParagraph = (paragraph) => {
+        let out = paragraph.trim();
+        if (!out) return '';
+
+        // Lindungi nama/brand penting agar tidak ikut diturunkan setelah titik.
+        const saved = [];
+        out = out.replace(new RegExp(protectedList.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'), (match) => {
+            const token = `__VGENPROTECT${saved.length}__`;
+            saved.push(match);
+            return token;
+        });
+
+        // Setelah . ! ? di dalam bait, buat huruf berikutnya kecil secara natural.
+        // Kapital penuh seperti WKWK/HTML tetap tidak disentuh.
+        out = out.replace(/([.!?])([ \t]+)([A-ZÀ-Ý])(?=[a-zà-ÿ])/g, (m, punct, space, ch) => punct + space + ch.toLowerCase());
+
+        // Awal bait wajib kapital jika berupa huruf biasa.
+        out = out.replace(/^([a-zà-ÿ])/, (_, ch) => ch.toUpperCase());
+
+        saved.forEach((word, index) => {
+            out = out.replace(`__VGENPROTECT${index}__`, word);
+        });
+        return out;
+    };
+
+    text = paragraphs.map(fixParagraph).filter(Boolean).join('\n\n');
+    return text.trim();
 }
 
 function nowWIB() {
@@ -498,18 +524,15 @@ function parseDynamicButtons(rawText) {
     if (Array.isArray(parsed)) {
         for (const original of parsed) {
             if (!original || typeof original !== 'object') continue;
-            let buttonText = String(original.text || '').trim().replace(/\s+/g, ' ').slice(0, 64);
+            const buttonText = String(original.text || '').trim().replace(/\s+/g, ' ').slice(0, 48);
             const url = String(original.url || '').trim();
             const callbackData = String(original.callback_data || '').trim();
-            if (!buttonText) continue;
-
-            // Tombol generik ini dilarang; biarkan AI membuat label yang spesifik.
-            if (/^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
+            if (!buttonText || /^💬?\s*lanjut\s*chat!?$/i.test(buttonText)) continue;
 
             if (callbackData.startsWith('ask|')) {
                 let safeCallback = callbackData;
                 while (Buffer.byteLength(safeCallback, 'utf8') > 64) {
-                    safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, Buffer.byteLength(safeCallback, 'utf8') - 1).toString('utf8');
+                    safeCallback = Buffer.from(safeCallback, 'utf8').subarray(0, Math.max(1, Buffer.byteLength(safeCallback, 'utf8') - 1)).toString('utf8');
                 }
                 validButtons.push({ text: buttonText, callback_data: safeCallback });
             } else if (url && /^https?:\/\/\S+$/i.test(url)) {
@@ -521,6 +544,84 @@ function parseDynamicButtons(rawText) {
 
     const cleanedText = (text.slice(0, start) + text.slice(end)).trim();
     return { text: cleanedText, buttons: validButtons.slice(0, 4) };
+}
+
+function randomButtonCount() {
+    // 1-3 paling sering; 4 hanya sesekali supaya tidak terasa template.
+    const roll = Math.random();
+    if (roll < 0.08) return 4;
+    if (roll < 0.38) return 2;
+    return 1 + Math.floor(Math.random() * 2);
+}
+
+function buildFallbackButtons(userText, aiText, { amTopic = false } = {}) {
+    const source = `${userText || ''} ${aiText || ''}`.toLowerCase();
+    const pool = [];
+
+    if (amTopic) {
+        pool.push(
+            { text: '💎 Order AM Prem', url: 'https://t.me/vickyyvall' },
+            { text: '✨ Fitur AM Prem', callback_data: 'ask|jelaskan fitur Alight Motion Premium secara singkat' },
+            { text: '🔥 Spill detailnya', callback_data: 'ask|jelaskan detail AM Prem dengan singkat dan jelas' }
+        );
+    } else if (/persija|persib|bola|sepak bola|liga/i.test(source)) {
+        pool.push(
+            { text: '🏆 Bahas bolanya', callback_data: 'ask|lanjut bahas topik sepak bola yang tadi dengan seru' },
+            { text: '🔥 Spill detail', callback_data: 'ask|kasih detail menarik tentang topik tadi' },
+            { text: '😂 Versi ngakak', callback_data: 'ask|bahas topik tadi dengan gaya meme singkat' }
+        );
+    } else if (/html|css|javascript|node\.js|script|coding|kode|program/i.test(source)) {
+        pool.push(
+            { text: '🛠️ Revisi kode', callback_data: 'ask|beri revisi atau perbaikan dari kode/topik tadi' },
+            { text: '📦 Bikin ZIP', callback_data: 'ask|jadikan project tadi menjadi beberapa file yang saling terhubung dalam satu ZIP jika memang perlu' },
+            { text: '💡 Jelasin kodenya', callback_data: 'ask|jelaskan kode atau konsep tadi secara singkat dan gampang dipahami' }
+        );
+    } else if (/tiktok|instagram|youtube|link|url/i.test(source)) {
+        pool.push(
+            { text: '👀 Bahas lagi', callback_data: 'ask|lanjut bahas topik atau link tadi' },
+            { text: '😂 Spill lucunya', callback_data: 'ask|buat komentar meme singkat tentang topik tadi' },
+            { text: '🔥 Kasih versi lain', callback_data: 'ask|kasih versi alternatif yang lebih menarik dari topik tadi' }
+        );
+    } else {
+        pool.push(
+            { text: '👀 Lanjut bahas', callback_data: 'ask|lanjutkan pembahasan tadi dengan natural' },
+            { text: '😂 Bikin ngakak', callback_data: 'ask|buat respons meme singkat yang masih nyambung dengan topik tadi' },
+            { text: '🔥 Kasih versi lain', callback_data: 'ask|kasih sudut pandang atau versi lain dari topik tadi' },
+            { text: '💡 Spill lagi', callback_data: 'ask|tambahkan satu hal menarik yang masih nyambung dengan topik tadi' }
+        );
+    }
+
+    const count = Math.min(randomButtonCount(), pool.length);
+    return pool.sort(() => Math.random() - 0.5).slice(0, count);
+}
+
+async function ensureAIButtons(chatId, userText, aiText, existingButtons, amTopic = false) {
+    if (existingButtons.length) return existingButtons.slice(0, 4);
+
+    // Minta model membuat tombol saja. Ini tetap AI-generated, bukan label statis.
+    try {
+        const buttonPrompt =
+            `[SISTEM INTERNAL: Buat rekomendasi tombol Telegram berdasarkan pesan pengguna dan jawaban AI di bawah. ` +
+            `Keluarkan HANYA satu tag [BUTTONS: ...], JSON valid, 1-4 tombol, jumlah dibuat natural dan tidak selalu 4. ` +
+            `Teks tombol pendek, lucu/santai bila cocok, emoji dipilih sendiri. ` +
+            `Gunakan callback_data ask|... untuk respons AI dan url hanya jika URL memang diberikan. ` +
+            `JANGAN gunakan label "Lanjut chat". Jangan keluarkan teks lain.]
+
+` +
+            `Pesan pengguna: ${userText || '-'}
+` +
+            `Jawaban AI: ${aiText || '-'}
+` +
+            (amTopic ? `Topik AM Prem: jika relevan, salah satu tombol harus bisa order ke https://t.me/vickyyvall.
+` : '');
+        const generated = await askAI(chatId, buttonPrompt, null, null);
+        const parsed = parseDynamicButtons(generated);
+        if (parsed.buttons.length) return parsed.buttons.slice(0, 4);
+    } catch (e) {
+        console.error('[AI BUTTON REPAIR]', e.message || e);
+    }
+
+    return buildFallbackButtons(userText, aiText, { amTopic });
 }
 
 function parseGeneratedFiles(rawText) {
@@ -757,7 +858,8 @@ bot.on('callback_query', async (query) => {
         rawResponse = generatedResult.text;
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        const ensuredButtons = await ensureAIButtons(chatId, action, rawResponse, buttonResult.buttons, /alight\s*motion|am\s*prem|am\s*premium/i.test(action));
+        const inline_keyboard = ensuredButtons.length ? [ensuredButtons] : [];
 
         if (!rawResponse) rawResponse = generatedResult.files.length
             ? '📦 File-nya sudah siap.'
@@ -820,7 +922,7 @@ bot.on('message', async (msg) => {
         try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const buttonReminder = `[INFO SISTEM: Buat 1-4 tombol AI DINAMIS bila balasan layak diberi opsi. AI sendiri yang mengarang topik, teks singkat, emoji, dan callback_data. DILARANG memakai tombol generik "Lanjut chat". Untuk tombol yang harus membuka halaman, gunakan {"text":"...","url":"https://..."}; untuk tombol yang memicu jawaban AI gunakan {"text":"...","callback_data":"ask|..."}. Jika ada URL yang diketahui dari konteks, pertimbangkan tombol URL singkat yang relevan. Untuk Alight Motion Premium/AM Prem, WAJIB sertakan [IMAGE: https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png] dan tombol URL order ke https://t.me/vickyyvall bila relevan. Jika membuat satu file, gunakan [FILE: filename="..."]...[/FILE]. Jika membuat beberapa file yang saling berhubungan sebagai satu project, gunakan [ZIP: filename="...zip"] dengan beberapa [ZIP_FILE: filename="..."]...[/ZIP_FILE] di dalamnya. Jangan taruh tag mesin di paragraf chat.]`;
+            const buttonReminder = `[INFO SISTEM MUTLAK: SETIAP BALASAN NORMAL WAJIB memiliki 1-4 tombol rekomendasi AI DINAMIS. Jumlah harus bervariasi; 4 hanya sesekali, jangan terus 4. AI sendiri WAJIB mengarang teks pendek, emoji, topik, dan maksud tombol berdasarkan percakapan. DILARANG memakai "Lanjut chat" atau label generik. Untuk tombol yang memicu jawaban AI gunakan {"text":"...","callback_data":"ask|..."}; untuk membuka halaman gunakan {"text":"...","url":"https://..."}. Tombol maksimal 48 karakter dan harus singkat. Jika ada URL yang diberikan user atau memang diketahui dari konteks, boleh buat tombol URL. Jika topik Alight Motion Premium/AM Prem muncul, WAJIB sertakan [IMAGE: https://ibb.co.com/Tx5ND8rF] dan buat tombol order URL https://t.me/vickyyvall ATAUPUN WhatsApp +62 895-4109-75149. Jika membuat satu file, gunakan [FILE: filename="..."]...[/FILE]. Jika membuat beberapa file yang saling berhubungan, gunakan [ZIP: filename="...zip"] dengan [ZIP_FILE] lengkap. Jangan taruh tag mesin di paragraf chat. Jangan pernah keluarkan kurung ] sendirian.]`;
             const finalPrompt = `${currentTimeInstruction}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
@@ -831,7 +933,7 @@ bot.on('message', async (msg) => {
 
         let rawResponse = cleanText(response);
         let imageToSent = null;
-        const amTopic = /(?:alight\s*motion|am\s*prem|am\s*premium|alight\s*motion\s*premium)/i.test(text || '');
+        const amTopic = /(?:alight\s*motion|am\s*prem|am\s*premium|alight\s*motion\s*premium)/i.test(text || '') || /ibb\.co\/xQvP6qy/i.test(text || '');
         const amPremiumImage = 'https://i.ibb.co/JPL0HjN/file-00000000c2088211b38f3ad07fe993da.png';
         const imageRegex = /\[IMAGE:\s*(https?:\/\/[^\s\]]+)\s*\]/is;
         const imgMatch = rawResponse.match(imageRegex);
@@ -845,10 +947,9 @@ bot.on('message', async (msg) => {
         rawResponse = generatedResult.text;
         const buttonResult = parseDynamicButtons(rawResponse);
         rawResponse = buttonResult.text;
-        const inline_keyboard = buttonResult.buttons.length ? [buttonResult.buttons] : [];
+        const ensuredButtons = await ensureAIButtons(chatId, text, rawResponse, buttonResult.buttons, amTopic);
+        const inline_keyboard = ensuredButtons.length ? [ensuredButtons] : [];
 
-        // Jika model masih gagal membuat tombol, jangan pasang tombol "Lanjut chat".
-        // Hanya gunakan keyboard yang benar-benar dibuat AI.
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', rawResponse);
 
