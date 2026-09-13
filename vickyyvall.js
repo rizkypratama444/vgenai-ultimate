@@ -402,6 +402,9 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
 async function processAIResponse(chatId, rawResponse, replyToId) {
     let text = String(rawResponse || '').trim();
 
+    // HAPUS SPAM INFO SISTEM KALO AI NYA BOCOR
+    text = text.replace(/\[INFO SISTEM:.*?\]/gi, '').trim();
+
     // 1. EXTRACT IMAGE (NEW SAFE SYNTAX <<<IMAGE: ...>>>)
     let imageToSent = null;
     const imageRegex = /<<<IMAGE:\s*(https?:\/\/[^\s>]+)\s*>>>/is;
@@ -502,12 +505,19 @@ bot.on('callback_query', async (query) => {
     const chatId = String(query.message?.chat?.id || '');
 
     try {
-        await bot.answerCallbackQuery(query.id);
-        if (!chatId || !data.startsWith('ask|')) return;
+        if (!chatId || !data.startsWith('ask|')) {
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
 
         const action = data.slice(4).trim();
-        if (!action) return;
-
+        if (!action) {
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
+        
+        // MUNCULIN NOTIFIKASI TOAST DI ATAS PAS BUTTON DIPENCET
+        await bot.answerCallbackQuery(query.id, { text: `Memproses: ${action}` });
         const finalPrompt =
             `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
             `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
