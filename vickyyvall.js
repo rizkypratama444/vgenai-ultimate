@@ -516,8 +516,12 @@ bot.on('callback_query', async (query) => {
             return;
         }
         
-        // MUNCULIN NOTIFIKASI TOAST DI ATAS PAS BUTTON DIPENCET
-        await bot.answerCallbackQuery(query.id, { text: `Memproses: ${action}` });
+        // MUNCULIN NOTIFIKASI BORDER DI ATAS PAS BUTTON DIKLIK (TOAST)
+        await bot.answerCallbackQuery(query.id, { 
+            text: `Lagi diproses bentar ngab: ${action}...`, 
+            show_alert: false // false = muncul border toast di atas, true = popup di tengah layar
+        });
+        
         const finalPrompt =
             `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
             `[INFO SISTEM: Tombol tersebut berisi instruksi yang harus diproses sebagai pesan pengguna.]\n` +
