@@ -402,10 +402,15 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
 async function processAIResponse(chatId, rawResponse, replyToId) {
     let text = String(rawResponse || '').trim();
 
-    // HAPUS SPAM INFO SISTEM KALO AI NYA BOCOR
+    // HAPUS SPAM INFO SISTEM & BOCORAN [THOUGHT] AI YANG NGELANTUR
     text = text.replace(/\[INFO SISTEM:.*?\]/gi, '').trim();
+    
+    // Pembersih brutal buat ngehapus logika AI sebelum dia beneran ngebales
+    text = text.replace(/\[THOUGHT\][\s\S]*?(?=(?:<<<|\n\n|Nah|Gas|Yaudah|Wkwk|Jadi|Oke|Iya|Gw|Lu))/gi, '').trim();
+    text = text.replace(/^(Reinforce|Instructions|Image|Pronouns|Thought):.*$/gim, '').trim();
 
     // 1. EXTRACT IMAGE (NEW SAFE SYNTAX <<<IMAGE: ...>>>)
+
     let imageToSent = null;
     const imageRegex = /<<<IMAGE:\s*(https?:\/\/[^\s>]+)\s*>>>/is;
     const imgMatch = text.match(imageRegex);
@@ -456,18 +461,33 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
                     if (validButtons.length >= 2) break;
                 }
             }
-            if (validButtons.length > 0) {
-                inline_keyboard = [validButtons.slice(0, 2)];
-            }
-        } catch (error) {
-            console.error('[BUTTON PARSER ERROR]', error.message);
+        if (validButtons.length > 0) {
+            inline_keyboard = [validButtons.slice(0, 2)];
         }
-        text = text.replace(buttonRegex, '').trim();
+    } catch (error) {
+        console.error('[BUTTON PARSER ERROR]', error.message);
     }
+    text = text.replace(buttonRegex, '').trim();
+}
 
-    if (!text && !imageToSent && !fileToSend) {
-        text = '😭 AI nggak menghasilkan jawaban kali ini.';
-    }
+// ============================================================
+// FIX BUTTON AM PREM & BUTTON REKOMENDASI (AUTO-FALLBACK)
+// ============================================================
+
+// FIX 1: Kalo AI ngirim promo AM Prem tapi LUPA ngasih tombol beli, paksa munculin!
+if (imageToSent === 'https://ibb.co.com/Tx5ND8rF' && inline_keyboard.length === 0) {
+    inline_keyboard = [[{ text: "🛒 Chat vickyyvall Sekarang", url: "https://t.me/vickyyvall" }]];
+}
+
+// FIX 2: Kalo bener-bener ga ada tombol (dan bukan promo), paksa munculin BUTTON REKOMENDASI biar rame!
+if (inline_keyboard.length === 0 && Math.random() > 0.3) { 
+    // Kasih probabilitas 70% munculin tombol rekomendasi ngambil dari START_BUTTON_POOL
+    inline_keyboard = [randomStartButtons()];
+}
+
+if (!text && !imageToSent && !fileToSend) {
+    text = '😭 AI nggak menghasilkan jawaban kali ini.';
+}
 
     // Kirim Media
     if (imageToSent) {
