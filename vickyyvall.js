@@ -643,6 +643,7 @@ bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
             reply_to_message_id: msg.message_id
         }
     );
+}); 
 
 // ============================================================
 // 📊 .CEKLIMIT
