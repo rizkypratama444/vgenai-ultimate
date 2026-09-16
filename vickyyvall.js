@@ -327,10 +327,10 @@ const START_BUTTON_POOL = [
     { text: '😂 Bikin aku ketawa', callback_data: 'ask|bikin aku ketawa dengan jokes singkat' },
     { text: '💡 Fakta random', callback_data: 'ask|kasih satu fakta random yang menarik' },
     { text: '⚽ Bahas bola', callback_data: 'ask|bahas sepak bola yang menarik' },
-    { text: '🎵 Rekomendasi musik', callback_data: 'ask|rekomendasikan musik berdasarkan mood' },
-    { text: '📱 Trik hp', callback_data: 'ask|kasih trik hp android yang berguna' },
+    { text: '🎵 Rekomendasi musik', callback_data: 'ask|rekomendasikan musik terkenal berdasarkan mood' },
+    { text: '🧑🏻‍🏫 Trik hp', callback_data: 'ask|kasih trik hp android yang berguna' },
     { text: '💻 Tips coding', callback_data: 'ask|kasih tips coding yang praktis' },
-    { text: '🤖 Ngobrol ai', callback_data: 'ask|jelasin sesuatu yang menarik tentang ai' }
+    { text: '🗣️ Ngobrol ai', callback_data: 'ask|jelasin sesuatu yang menarik tentang ai' }
 ];
 
 function randomStartButtons() {
@@ -338,17 +338,62 @@ function randomStartButtons() {
 }
 
 bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
+    const user = getUserRecord(msg);
+    const info = getUserLimitInfo(msg);
+
+    const username = user?.username
+        ? `@${user.username}`
+        : 'Tidak ada username';
+
+    const statusText = getStatusLabel(info.status);
+
+    const limitText = info.unlimited
+        ? 'Unlimited ∞'
+        : `${info.remaining} / ${info.total}`;
+
+    const usedText = info.unlimited
+        ? `${info.used} penggunaan`
+        : `${info.used} penggunaan`;
+
     const text =
-        `<b>VGen AI Multifungsi</b> 🏴󠁧󠁢󠁥󠁮󠁧󠁿\n\n` +
+        `<b>✦ VICKYYVALL - AI ✦</b>\n` +
+        `<i>YOUR AI • YOUR SPACE • YOUR VIBE</i>\n\n` +
+
+        `<blockquote>` +
+        `<b>👤 USER PROFILE</b>\n` +
+        `├ Username : <b>${username}</b>\n` +
+        `├ Status   : <b>${statusText}</b>\n` +
+        `├ AI Limit : <b>${limitText}</b>\n` +
+        `└ Terpakai : <b>${usedText}</b>` +
+        `</blockquote>\n\n` +
+
+        `<blockquote>` +
+        `<b>💎 VIP ACCESS</b>\n` +
+        `├ Harga normal : <s>3̶9̶.̶9̶0̶0̶</s>\n` +
+        `├ Harga VIP    : <b>Rp25.900</b>\n` +
+        `├ Limit utama  : <b>50</b>\n` +
+        `├ Bonus        : <b>+25</b>\n` +
+        `└ Total        : <b>75 AI Limit</b>` +
+        `</blockquote>\n\n` +
+
+        `<b>VGen AI Multifungsi</b> 🏴‍☠️\n\n` +
         `Teman AI yang siap nemenin lu kapan aja. 😎\n\n` +
         `Mau ngobrol, cari ide, belajar, coding, bahas bola, ` +
-        `atau sekadar random juga gas.\n\n` +
-        `<b>Temukan juga VGen AI di sini 👇</b>`;
+        `atau sekadar random juga gw gas😹🔥\n\n` +
+
+        `<b>✨ PILIHAN MENU</b>\n` +
+        `Pilih tombol di bawah atau langsung ketik apa yang mau lu obrolin.\n\n` +
+
+        `<b>Temukan juga vickyyvall - AI di sini 👇</b>`;
 
     const keyboard = [
         [
             { text: '💎 AM Prem 1th', url: 'https://t.me/vickyyvall' },
-            { text: '🛒 Upgrade AI', callback_data: 'ask|info upgrade ai dan limit' }
+            { text: '🛒 Upgrade AI', callback_data: 'ask|jelaskan harga VIP dan fasilitasnya' }
+        ],
+        [
+            { text: '📊 Cek Limit', callback_data: 'show_limit' },
+            { text: '🏆 Info VIP', callback_data: 'vip_info' }
         ],
         [
             { text: '🎵 Tiktok @vickyyvall', url: 'https://www.tiktok.com/@vickyyvall' }
@@ -390,12 +435,189 @@ bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
     await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.');
 });
 
-bot.onText(/^\/status(?:@\w+)?$/i, async (msg) => {
-    await sendReply(bot, msg.chat.id,
-        `Status VGen AI\n` +
-        `Provider: ${activeProvider || 'BELUM DISET'}\n` +
-        `Model: ${activeModel || 'BELUM DISET'}\n` +
-        `Waktu WIB: ${nowWIB()}`
+// ============================================================
+// 💎 VIP MANAGEMENT COMMANDS
+// ============================================================
+
+// Escape HTML agar username tidak bisa merusak format Telegram.
+function escapeHTML(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// Cari user berdasarkan username yang sudah pernah berinteraksi
+// dengan bot dan tersimpan di database.json.
+function findUserByUsername(username) {
+    const target = normalizeUsername(username);
+
+    if (!target) return null;
+
+    for (const userId of Object.keys(db.users || {})) {
+        const user = db.users[userId];
+
+        if (normalizeUsername(user.username) === target) {
+            return user;
+        }
+    }
+
+    return null;
+}
+
+
+// ============================================================
+// .ADDVIP @USERNAME
+// OWNER ONLY
+// ============================================================
+
+bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
+
+    if (!isOwner(msg)) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<blockquote>` +
+            `<b>⛔ AKSES DITOLAK</b>\n\n` +
+            `Perintah <code>.addvip</code> hanya bisa digunakan oleh owner bot.` +
+            `</blockquote>`
+        );
+        return;
+    }
+
+    const argument = String(match?.[1] || '').trim();
+
+    // WAJIB @username
+    if (!/^@[A-Za-z0-9_]{5,32}$/.test(argument)) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<blockquote>` +
+            `<b>⚠️ FORMAT SALAH</b>\n\n` +
+            `Gunakan format:\n\n` +
+            `<code>.addvip @username</code>\n\n` +
+            `Contoh:\n` +
+            `<code>.addvip @contohuser</code>\n\n` +
+            `Jangan lupa tanda <b>@</b>.` +
+            `</blockquote>`
+        );
+        return;
+    }
+
+    const username = normalizeUsername(argument);
+    const target = findUserByUsername(username);
+
+    if (!target) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<blockquote>` +
+            `<b>🔎 USER BELUM DITEMUKAN</b>\n\n` +
+            `Username <b>@${escapeHTML(username)}</b> belum ditemukan di database bot.\n\n` +
+            `Minta user tersebut chat bot minimal sekali terlebih dahulu.` +
+            `</blockquote>`
+        );
+        return;
+    }
+
+    target.status = 'VIP';
+    target.vip = true;
+    target.aiLimit = VIP_TOTAL_LIMIT;
+
+    // Reset limit menjadi 75 ketika diberikan VIP.
+    target.aiUsed = 0;
+    target.vipGrantedAt = new Date().toISOString();
+    target.updatedAt = new Date().toISOString();
+
+    saveDb();
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        `<blockquote>` +
+        `<b>🏆 VIP BERHASIL DIAKTIFKAN</b>\n\n` +
+        `👤 User : <b>@${escapeHTML(username)}</b>\n` +
+        `🏷️ Status : <b>VIP</b>\n` +
+        `📊 Limit : <b>75</b>\n` +
+        `├ Limit utama : 50\n` +
+        `└ Bonus : +25\n\n` +
+        `💎 Harga : <b>Rp25.900</b>` +
+        `</blockquote>`
+    );
+});
+
+
+// ============================================================
+// .CEKLIMIT @USERNAME
+// ============================================================
+
+bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
+
+    const argument = String(match?.[1] || '').trim();
+
+    if (!/^@[A-Za-z0-9_]{5,32}$/.test(argument)) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<blockquote>` +
+            `<b>⚠️ FORMAT SALAH</b>\n\n` +
+            `Gunakan:\n` +
+            `<code>.ceklimit @username</code>\n\n` +
+            `Contoh:\n` +
+            `<code>.ceklimit @vickyyvall</code>` +
+            `</blockquote>`
+        );
+        return;
+    }
+
+    const username = normalizeUsername(argument);
+    const target = findUserByUsername(username);
+
+    if (!target) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<blockquote>` +
+            `<b>🔎 USER TIDAK DITEMUKAN</b>\n\n` +
+            `@${escapeHTML(username)} belum tercatat di database bot.` +
+            `</blockquote>`
+        );
+        return;
+    }
+
+    const isTargetOwner = target.status === 'OWNER';
+
+    const total = isTargetOwner
+        ? 'Unlimited ∞'
+        : target.status === 'VIP'
+            ? VIP_TOTAL_LIMIT
+            : NON_VIP_LIMIT;
+
+    const used = Number(target.aiUsed || 0);
+
+    const remaining = isTargetOwner
+        ? 'Unlimited ∞'
+        : Math.max(0, Number(total) - used);
+
+    const status =
+        target.status === 'OWNER'
+            ? '👑 OWNER'
+            : target.status === 'VIP'
+                ? '🏆 VIP'
+                : '👤 NON-VIP';
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        `<blockquote>` +
+        `<b>📊 USER LIMIT</b>\n\n` +
+        `👤 Username : <b>@${escapeHTML(username)}</b>\n` +
+        `🏷️ Status   : <b>${status}</b>\n` +
+        `📦 Total    : <b>${total}</b>\n` +
+        `📉 Terpakai : <b>${used}</b>\n` +
+        `⚡ Sisa     : <b>${remaining}</b>` +
+        `</blockquote>`
     );
 });
 
@@ -474,6 +696,89 @@ async function buildMediaPrompt(msg, basePrompt) {
         finalPrompt: `[Sistem: Pengguna mengirim gambar. Analisa gambar tersebut.]\n\n${basePrompt}`,
         base64Media: downloaded.buffer.toString('base64'),
         mimeTypeMedia: 'image/jpeg'
+    };
+}
+
+// ============================================================
+// 🔐 AI LIMIT GATE
+// ============================================================
+
+function consumeAiLimit(msg) {
+    const info = getUserLimitInfo(msg);
+
+    // OWNER = Unlimited
+    if (info.unlimited) {
+        return {
+            allowed: true,
+            info
+        };
+    }
+
+    // Limit habis
+    if (info.remaining <= 0) {
+        return {
+            allowed: false,
+            info
+        };
+    }
+
+    const user = getUserRecord(msg);
+
+    if (!user) {
+        return {
+            allowed: false,
+            info
+        };
+    }
+
+    // HANYA di sini AI usage bertambah.
+    user.aiUsed = Number(user.aiUsed || 0) + 1;
+    user.updatedAt = new Date().toISOString();
+
+    saveDb();
+
+    return {
+        allowed: true,
+        info: getUserLimitInfo(msg)
+    };
+}
+
+
+function buildLimitExpiredMessage(info) {
+    return {
+        text:
+            `<blockquote>` +
+            `<b>🚫 AI LIMIT HABIS</b>\n\n` +
+
+            `Limit AI akun lu sudah mencapai batas.\n\n` +
+
+            `👤 Status : <b>${info.status === 'VIP' ? '🏆 VIP' : '👤 NON-VIP'}</b>\n` +
+            `📊 Limit  : <b>${info.total}</b>\n` +
+            `📉 Sisa   : <b>0</b>\n\n` +
+
+            `💎 Mau lanjut ngobrol lebih banyak?\n` +
+            `Upgrade ke VIP dan dapat:\n` +
+            `├ 50 Limit utama\n` +
+            `├ +25 Bonus Limit\n` +
+            `└ Total <b>75 AI Limit</b>\n\n` +
+
+            `<s>Rp3̶9̶.̶9̶0̶0̶</s> → <b>Rp25.900</b>` +
+            `</blockquote>`,
+
+        keyboard: [
+            [
+                {
+                    text: '💎 Upgrade VIP',
+                    url: 'https://t.me/vickyyvall'
+                }
+            ],
+            [
+                {
+                    text: '🛒 Order AM Prem',
+                    callback_data: 'order_am_prem'
+                }
+            ]
+        ]
     };
 }
 
@@ -682,6 +987,82 @@ bot.on('callback_query', async (query) => {
     const data = String(query.data || '');
     const chatId = String(query.message?.chat?.id || '');
 
+// ============================================================
+// 🛒 ORDER AM PREM
+// NON-AI / TIDAK MEMOTONG LIMIT
+// ============================================================
+
+if (data === 'order_am_prem') {
+
+    await bot.answerCallbackQuery(query.id);
+
+    await sendReply(
+        bot,
+        chatId,
+        `<blockquote>` +
+        `<b>🛒 ORDER ALIGHT MOTION PREMIUM</b>\n\n` +
+        `Lu tertarik order AM Prem 1 Tahun?\n\n` +
+        `💎 Harga: <b>Rp5.000</b>\n` +
+        `⏱️ Durasi: <b>1 Tahun</b>\n\n` +
+        `Mau lanjut order sekarang?` +
+        `</blockquote>`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '✅ Ya, mau order',
+                            url: 'https://t.me/vickyyvall'
+                        }
+                    ],
+                    [
+                        {
+                            text: '⏳ Lain kali',
+                            callback_data: 'order_am_later'
+                        }
+                    ]
+                ]
+            }
+        }
+    );
+
+    return;
+}
+
+if (data === 'order_am_later') {
+
+    await bot.answerCallbackQuery(query.id);
+
+    await sendReply(
+        bot,
+        chatId,
+        `<blockquote>` +
+        `<b>⏳ OKE, SANTAI.</b>\n\n` +
+        `Kalau belum mau order sekarang, gapapa.\n\n` +
+        `Tapi kalau lu mau akses AI lebih banyak,\n` +
+        `lu tetap bisa upgrade ke VIP kapan aja. 😝\n\n` +
+        `💎 <b>VIP AI</b>\n` +
+        `├ 50 Limit utama\n` +
+        `├ +25 Bonus\n` +
+        `└ Total 75 Limit\n\n` +
+        `<s>Rp3̶9̶.̶9̶0̶0̶</s> → <b>Rp25.900</b>` +
+        `</blockquote>`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '💎 Upgrade VIP',
+                            url: 'https://t.me/vickyyvall'
+                        }
+                    ]
+                ]
+            }
+        }
+    );
+
+    return;
+}
     try {
         if (!chatId || !data.startsWith('ask|')) {
             await bot.answerCallbackQuery(query.id);
@@ -713,10 +1094,46 @@ bot.on('callback_query', async (query) => {
             { reply_to_message_id: query.message?.message_id }
         );
 
-        const stopRecordingPresence = startRecordingPresence(chatId);
-        let response;
-        try {
-            response = await askAI(chatId, finalPrompt, null, null);
+        // ============================================================
+// 🔐 LIMIT CHECK UNTUK BUTTON AI
+// ============================================================
+
+const callbackUser = query.from || {};
+const callbackMsg = {
+    from: callbackUser,
+    chat: query.message?.chat || {},
+    message_id: query.message?.message_id
+};
+
+const limitCheck = consumeAiLimit(callbackMsg);
+
+if (!limitCheck.allowed) {
+    const expired = buildLimitExpiredMessage(limitCheck.info);
+
+    await bot.answerCallbackQuery(query.id, {
+        text: 'AI limit lu sudah habis 😭',
+        show_alert: false
+    });
+
+    await sendReply(
+        bot,
+        chatId,
+        expired.text,
+        {
+            reply_markup: {
+                inline_keyboard: expired.keyboard
+            }
+        }
+    );
+
+    return;
+}
+
+const stopRecordingPresence = startRecordingPresence(chatId);
+let response;
+
+try {
+    response = await askAI(chatId, finalPrompt, null, null);
         } finally {
             stopRecordingPresence();
         }
@@ -741,11 +1158,35 @@ bot.on('message', async (msg) => {
     if (!text && !getMediaFromMessage(msg)) return;
     if (isCommand(text)) return;
 
-    const chatId = String(msg.chat.id);
-    if (aiMutedChats.has(chatId)) return;
-    if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
+const chatId = String(msg.chat.id);
 
-    try {
+if (aiMutedChats.has(chatId)) return;
+if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
+
+// ============================================================
+// 🔐 LIMIT HANYA UNTUK AI CHAT
+// ============================================================
+
+const limitCheck = consumeAiLimit(msg);
+
+if (!limitCheck.allowed) {
+    const expired = buildLimitExpiredMessage(limitCheck.info);
+
+    await sendReply(
+        bot,
+        chatId,
+        expired.text,
+        {
+            reply_markup: {
+                inline_keyboard: expired.keyboard
+            }
+        }
+    );
+
+    return;
+}
+
+try {
         const stopRecordingPresence = startRecordingPresence(chatId);
 
         let response;
