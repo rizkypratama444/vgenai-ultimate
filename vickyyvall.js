@@ -452,153 +452,6 @@ function getPrettyUserName(user) {
 }
 
 
-// ============================================================
-// .ADDVIP
-// ============================================================
-
-bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
-
-    // HANYA OWNER
-    if (!isOwner(msg)) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>⛔ AKSES DITOLAK</b>\n\n` +
-            `Perintah <code>.addvip</code> hanya dapat digunakan oleh owner bot.`
-        );
-        return;
-    }
-
-    const rawUsername = String(match?.[1] || '').trim();
-
-    // Format wajib @username
-    if (!rawUsername || !rawUsername.startsWith('@')) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>⚠️ FORMAT SALAH</b>\n\n` +
-            `<b>Format:</b>\n` +
-            `<code>.addvip @username</code>\n\n` +
-            `<i>Contoh:</i>\n` +
-            `<code>.addvip @vickyyvall</code>`
-        );
-        return;
-    }
-
-    const username = normalizeUsername(rawUsername);
-    const target = findUserByUsername(username);
-
-    if (!target) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>🔎 USER BELUM DITEMUKAN</b>\n\n` +
-            `Username <code>@${username}</code> belum ditemukan di database bot.\n\n` +
-            `Minta user tersebut chat bot minimal sekali terlebih dahulu.`
-        );
-        return;
-    }
-
-    target.status = 'VIP';
-    target.vip = true;
-    target.aiLimit = VIP_TOTAL_LIMIT;
-    target.aiUsed = 0;
-    target.updatedAt = new Date().toISOString();
-
-    saveDb();
-
-    await sendReply(
-        bot,
-        msg.chat.id,
-        `<b>🏆 VIP BERHASIL DIAKTIFKAN</b>\n\n` +
-        `👤 User: <code>@${username}</code>\n` +
-        `🏆 Status: <b>VIP</b>\n` +
-        `💎 Limit: <b>${VIP_TOTAL_LIMIT}</b>\n` +
-        `🎁 Bonus: <b>+${VIP_BONUS_LIMIT}</b>\n` +
-        `♾️ Total akses AI: <b>${VIP_TOTAL_LIMIT} chat</b>`
-    );
-});
-
-
-// ============================================================
-// .CEKLIMIT
-// ============================================================
-
-bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
-
-    const rawUsername = String(match?.[1] || '').trim();
-
-    // Kalau kosong, cek diri sendiri
-    if (!rawUsername) {
-
-        const info = getUserLimitInfo(msg);
-        const username = normalizeUsername(msg.from?.username);
-
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>📊 STATUS LIMIT AI</b>\n\n` +
-            `👤 Username: <code>@${username || 'tidak tersedia'}</code>\n` +
-            `🏷️ Status: <b>${getStatusLabel(info.status)}</b>\n` +
-            `💬 Limit: <b>${getLimitLabel(info)}</b>\n` +
-            `📈 Terpakai: <b>${info.used}</b>\n\n` +
-            (info.unlimited
-                ? `👑 Owner mendapatkan akses <b>Unlimited ∞</b>.`
-                : `Gunakan limit hanya untuk <b>obrolan AI</b>.`)
-        );
-
-        return;
-    }
-
-    // Username wajib menggunakan @
-    if (!rawUsername.startsWith('@')) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>⚠️ FORMAT SALAH</b>\n\n` +
-            `<b>Format:</b>\n` +
-            `<code>.ceklimit @username</code>\n\n` +
-            `<i>Contoh:</i>\n` +
-            `<code>.ceklimit @vickyyvall</code>`
-        );
-        return;
-    }
-
-    const username = normalizeUsername(rawUsername);
-    const target = findUserByUsername(username);
-
-    if (!target) {
-        await sendReply(
-            bot,
-            msg.chat.id,
-            `<b>🔎 USER BELUM DITEMUKAN</b>\n\n` +
-            `Username <code>@${username}</code> belum ditemukan di database bot.`
-        );
-        return;
-    }
-
-    const fakeMsg = {
-        from: {
-            id: target.userId,
-            username: target.username,
-            first_name: target.firstName,
-            last_name: target.lastName
-        }
-    };
-
-    const info = getUserLimitInfo(fakeMsg);
-
-    await sendReply(
-        bot,
-        msg.chat.id,
-        `<b>📊 CEK LIMIT USER</b>\n\n` +
-        `👤 Username: <code>@${username}</code>\n` +
-        `🏷️ Status: <b>${getStatusLabel(info.status)}</b>\n` +
-        `💬 Limit tersisa: <b>${getLimitLabel(info)}</b>\n` +
-        `📈 Terpakai: <b>${info.used}</b>\n` +
-        `🎁 Total paket: <b>${info.total ?? '∞'}</b>`
-    );
-});
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
     aiMutedChats.add(String(msg.chat.id));
@@ -728,44 +581,123 @@ bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
     );
 });
 
-
 // ============================================================
-// .CEKLIMIT @USERNAME
+// 📊 .CEKLIMIT
+// SUPPORT:
+// .ceklimit
+// .ceklimit @username
 // ============================================================
 
 bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
 
     const argument = String(match?.[1] || '').trim();
 
-    if (!/^@[A-Za-z0-9_]{5,32}$/.test(argument)) {
+    // ========================================================
+    // CEK DIRI SENDIRI
+    // ========================================================
+
+    if (!argument) {
+
+        const info = getUserLimitInfo(msg);
+        const username = normalizeUsername(msg.from?.username);
+
+        const status = getStatusLabel(info.status);
+        const limit = getLimitLabel(info);
+
+        const explanation = info.unlimited
+            ? `👑 Karena akun lu adalah <b>OWNER</b>, akses AI lu tidak dibatasi jumlah chat.`
+            : info.status === 'VIP'
+                ? `💎 Status <b>VIP</b> memberikan paket limit AI khusus. Setiap kali lu benar-benar ngobrol dengan AI, pemakaian akan dihitung dari limit tersebut.`
+                : `ℹ️ Limit ini hanya berkurang ketika lu memakai fitur <b>AI chat</b>. Command bot, /start, cek limit, dan menu biasa tidak mengurangi limit AI.`;
+
         await sendReply(
             bot,
             msg.chat.id,
+            `<b>📊 STATUS LIMIT AI</b>\n\n` +
+
+            `<blockquote>` +
+            `👤 Username : <b>@${escapeHTML(username || 'tidak tersedia')}</b>\n` +
+            `🏷️ Status : <b>${status}</b>\n` +
+            `💬 Limit : <b>${limit}</b>\n` +
+            `📈 Terpakai : <b>${info.used}</b>` +
+            `</blockquote>\n\n` +
+
+            `${explanation}\n\n` +
+
+            `<blockquote>` +
+            `<b>💡 Gampangnya:</b>\n` +
+            `${info.unlimited
+                ? `lu bebas ngobrol dengan AI tanpa potongan limit.`
+                : `yang dihitung cuma percakapan AI, bukan semua aktivitas lu di bot.`}` +
+            `</blockquote>`,
+
+            {
+                reply_to_message_id: msg.message_id
+            }
+        );
+
+        return;
+    }
+
+
+    // ========================================================
+    // USERNAME HARUS @USERNAME
+    // ========================================================
+
+    if (!argument.startsWith('@')) {
+
+        await sendReply(
+            bot,
+            msg.chat.id,
+
             `<blockquote>` +
             `<b>⚠️ FORMAT SALAH</b>\n\n` +
             `Gunakan:\n` +
             `<code>.ceklimit @username</code>\n\n` +
             `Contoh:\n` +
             `<code>.ceklimit @vickyyvall</code>` +
-            `</blockquote>`
+            `</blockquote>`,
+
+            {
+                reply_to_message_id: msg.message_id
+            }
         );
+
         return;
     }
+
+
+    // ========================================================
+    // CARI USER
+    // ========================================================
 
     const username = normalizeUsername(argument);
     const target = findUserByUsername(username);
 
     if (!target) {
+
         await sendReply(
             bot,
             msg.chat.id,
+
             `<blockquote>` +
             `<b>🔎 USER TIDAK DITEMUKAN</b>\n\n` +
-            `@${escapeHTML(username)} belum tercatat di database bot.` +
-            `</blockquote>`
+            `@${escapeHTML(username)} belum tercatat di database bot.\n\n` +
+            `Minta user tersebut chat bot minimal sekali terlebih dahulu.` +
+            `</blockquote>`,
+
+            {
+                reply_to_message_id: msg.message_id
+            }
         );
+
         return;
     }
+
+
+    // ========================================================
+    // HITUNG LIMIT USER
+    // ========================================================
 
     const isTargetOwner = target.status === 'OWNER';
 
@@ -788,97 +720,41 @@ bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
                 ? '🏆 VIP'
                 : '👤 NON-VIP';
 
+
+    // ========================================================
+    // HASIL
+    // ========================================================
+
     await sendReply(
         bot,
         msg.chat.id,
+
+        `<b>📊 CEK LIMIT USER</b>\n\n` +
+
         `<blockquote>` +
-        `<b>📊 USER LIMIT</b>\n\n` +
         `👤 Username : <b>@${escapeHTML(username)}</b>\n` +
-        `🏷️ Status   : <b>${status}</b>\n` +
-        `📦 Total    : <b>${total}</b>\n` +
+        `🏷️ Status : <b>${status}</b>\n` +
+        `📦 Total : <b>${total}</b>\n` +
         `📉 Terpakai : <b>${used}</b>\n` +
-        `⚡ Sisa     : <b>${remaining}</b>` +
-        `</blockquote>`
+        `⚡ Sisa : <b>${remaining}</b>` +
+        `</blockquote>\n\n` +
+
+        `<blockquote>` +
+        `<b>💡 Keterangan:</b>\n` +
+        `${
+            isTargetOwner
+                ? `Akun ini memiliki akses AI <b>Unlimited</b>.`
+                : target.status === 'VIP'
+                    ? `Akun VIP memiliki paket limit AI khusus. Limit berkurang hanya saat fitur AI digunakan.`
+                    : `Akun NON-VIP menggunakan limit AI standar.`
+        }` +
+        `</blockquote>`,
+
+        {
+            reply_to_message_id: msg.message_id
+        }
     );
 });
-
-async function downloadTelegramFile(fileId) {
-    try {
-        const file = await bot.getFile(fileId);
-        if (!file.file_path) return null;
-        const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Download Telegram gagal (${res.status})`);
-        const buffer = Buffer.from(await res.arrayBuffer());
-        return { buffer, filePath: file.file_path };
-    } catch (e) {
-        console.error('[MEDIA DOWNLOAD]', e.message);
-        return null;
-    }
-}
-
-function getMediaFromMessage(msg) {
-    if (msg.photo?.length) {
-        return {
-            fileId: msg.photo[msg.photo.length - 1].file_id,
-            mediaType: 'image',
-            mimeType: 'image/jpeg',
-            fileName: 'telegram-photo.jpg'
-        };
-    }
-    if (msg.document) {
-        return {
-            fileId: msg.document.file_id,
-            mediaType: 'document',
-            mimeType: msg.document.mime_type || 'application/octet-stream',
-            fileName: msg.document.file_name || 'document'
-        };
-    }
-    return null;
-}
-
-async function buildMediaPrompt(msg, basePrompt) {
-    const media = getMediaFromMessage(msg);
-    if (!media) return { finalPrompt: basePrompt, base64Media: null, mimeTypeMedia: null };
-
-    const downloaded = await downloadTelegramFile(media.fileId);
-    if (!downloaded) {
-        return {
-            finalPrompt: `[Sistem: Lampiran Telegram tidak berhasil diunduh.]\n\n${basePrompt}`,
-            base64Media: null,
-            mimeTypeMedia: null
-        };
-    }
-
-    if (media.mediaType === 'document') {
-        const lower = media.fileName.toLowerCase();
-        const readable = media.mimeType.includes('text') ||
-            media.mimeType.includes('json') ||
-            media.mimeType.includes('javascript') ||
-            /\.(js|json|txt|csv|html|css|py|md)$/i.test(lower);
-
-        if (readable) {
-            const text = downloaded.buffer.toString('utf8').slice(0, MAX_TEXT_FILE);
-            return {
-                finalPrompt: `[Sistem: Pengguna mengirim dokumen "${media.fileName}"]\nIsi Dokumen:\n\`\`\`\n${text}\n\`\`\`\n\nPesan: ${basePrompt}`,
-                base64Media: null,
-                mimeTypeMedia: null
-            };
-        }
-
-        return {
-            finalPrompt: `[Sistem: Pengguna mengirim lampiran dokumen "${media.fileName}".]\n\n${basePrompt}`,
-            base64Media: null,
-            mimeTypeMedia: media.mimeType
-        };
-    }
-
-    return {
-        finalPrompt: `[Sistem: Pengguna mengirim gambar. Analisa gambar tersebut.]\n\n${basePrompt}`,
-        base64Media: downloaded.buffer.toString('base64'),
-        mimeTypeMedia: 'image/jpeg'
-    };
-}
 
 // ============================================================
 // 🔐 AI LIMIT GATE
