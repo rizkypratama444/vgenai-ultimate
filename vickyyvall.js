@@ -251,8 +251,14 @@ function convertMarkdownToHTML(text) {
     if (!text) return '';
     let formatted = String(text);
 
-    // Ubah *teks* menjadi <b>teks</b> jika AI lupa pake HTML
-    formatted = formatted.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+    // 1. Ubah list bawaan AI yang pake bintang (* Item) jadi minus (- Item)
+    formatted = formatted.replace(/^\s*\*\s+/gm, '- ');
+
+    // 2. Ubah **Teks Tebal** (Double Asterisk) menjadi <b>Teks Tebal</b> tanpa bintang bocor
+    formatted = formatted.replace(/\*\*([\s\S]*?)\*\*/g, '<b>$1</b>');
+
+    // 3. Ubah *Teks Miring* (Single Asterisk) menjadi <i>Teks Miring</i>
+    formatted = formatted.replace(/\*([\s\S]*?)\*/g, '<i>$1</i>');
 
     // Ubah ```kode``` menjadi <pre><code>kode</code></pre>
     formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
@@ -1535,10 +1541,13 @@ try {
         const stopRecordingPresence = startRecordingPresence(chatId);
 
         let response;
-        try {
+                try {
             const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const finalPrompt = `${currentTimeInstruction}\n\n${mediaResult.finalPrompt}`;
+            // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
+            const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
+            const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
+            const finalPrompt = `${currentTimeInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
         } finally {
             stopRecordingPresence();
