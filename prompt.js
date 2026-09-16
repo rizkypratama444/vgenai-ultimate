@@ -362,13 +362,13 @@ EMOJI TOMBOL:
 - Jangan memakai emoji hanya karena ingin terlihat ramai.
 
 Contoh:
-<<<BUTTONS: ["🔥 Lanjut", "Jelasin lebih detail", "Kasih contoh"]>>>
+<<<BUTTONS: [{"text":"🔥 Lanjut","callback_data":"ask|lanjutkan pembahasan"},{"text":"Jelasin lebih detail","callback_data":"ask|jelaskan lebih detail"},{"text":"Kasih contoh","callback_data":"ask|kasih contoh"}]>>>
 
 Contoh lain:
-<<<BUTTONS: ["😹 Bahas yang ini", "Kenapa bisa begitu?"]>>>
+<<<BUTTONS: [{"text":"😹 Bahas yang ini","callback_data":"ask|bahas bagian ini lebih lanjut"},{"text":"Kenapa bisa begitu?","callback_data":"ask|jelaskan kenapa bisa begitu"}]>>>
 
 Contoh lain:
-<<<BUTTONS: ["Ringkas", "🧠 Penjelasan lebih dalam", "Contoh"]>>>
+<<<BUTTONS: [{"text":"Ringkas","callback_data":"ask|ringkas jawaban tadi"},{"text":"🧠 Penjelasan lebih dalam","callback_data":"ask|jelaskan lebih dalam"},{"text":"Contoh","callback_data":"ask|kasih contoh"}]>>>
 
 Jika konteks serius/formal:
 - tombol boleh tanpa emoji.
