@@ -239,7 +239,9 @@ function displayName(msg) {
 }
 
 function isCommand(text) {
-    return /^\/(?:start|help|mute|unmute|status|reset)(?:@\w+)?(?:\s|$)/i.test(text);
+    return /^(?:\/(?:start|help|mute|unmute|status|reset)(?:@\w+)?|\.addvip(?:\s|$)|\.ceklimit(?:\s|$))/i.test(
+        String(text || '').trim()
+    );
 }
 
 // ============================================================
@@ -386,15 +388,15 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
 
         `<b>Temukan juga vickyyvall - AI di sini 👇</b>`;
 
-    const keyboard = [
-        [
-            { text: '💎 AM Prem 1th', url: 'https://t.me/vickyyvall' },
-            { text: '🛒 Upgrade AI', callback_data: 'ask|jelaskan harga VIP dan fasilitasnya' }
-        ],
-        [
-            { text: '📊 Cek Limit', callback_data: 'show_limit' },
-            { text: '🏆 Info VIP', callback_data: 'vip_info' }
-        ],
+const keyboard = [
+    [
+        { text: '💎 AM Prem 1th', url: 'https://t.me/vickyyvall' },
+        { text: '🛒 Upgrade AI', callback_data: 'ui|vip' }
+    ],
+    [
+        { text: '📊 Cek Limit', callback_data: 'ui|limit' },
+        { text: '🏆 Info VIP', callback_data: 'ui|vip' }
+    ],
         [
             { text: '🎵 Tiktok @vickyyvall', url: 'https://www.tiktok.com/@vickyyvall' }
         ],
@@ -417,6 +419,185 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
             reply_markup: { inline_keyboard: keyboard }
         });
     }
+});
+
+// ============================================================
+// 👑 VIP COMMAND SYSTEM
+// ============================================================
+
+function findUserByUsername(username) {
+    const target = normalizeUsername(username);
+
+    if (!target) return null;
+
+    for (const userId of Object.keys(db.users || {})) {
+        const user = db.users[userId];
+
+        if (normalizeUsername(user.username) === target) {
+            return user;
+        }
+    }
+
+    return null;
+}
+
+function getPrettyUserName(user) {
+    if (!user) return 'User';
+
+    if (user.username) {
+        return `@${user.username}`;
+    }
+
+    return user.firstName || 'User';
+}
+
+
+// ============================================================
+// .ADDVIP
+// ============================================================
+
+bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
+
+    // HANYA OWNER
+    if (!isOwner(msg)) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>⛔ AKSES DITOLAK</b>\n\n` +
+            `Perintah <code>.addvip</code> hanya dapat digunakan oleh owner bot.`
+        );
+        return;
+    }
+
+    const rawUsername = String(match?.[1] || '').trim();
+
+    // Format wajib @username
+    if (!rawUsername || !rawUsername.startsWith('@')) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>⚠️ FORMAT SALAH</b>\n\n` +
+            `<b>Format:</b>\n` +
+            `<code>.addvip @username</code>\n\n` +
+            `<i>Contoh:</i>\n` +
+            `<code>.addvip @vickyyvall</code>`
+        );
+        return;
+    }
+
+    const username = normalizeUsername(rawUsername);
+    const target = findUserByUsername(username);
+
+    if (!target) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>🔎 USER BELUM DITEMUKAN</b>\n\n` +
+            `Username <code>@${username}</code> belum ditemukan di database bot.\n\n` +
+            `Minta user tersebut chat bot minimal sekali terlebih dahulu.`
+        );
+        return;
+    }
+
+    target.status = 'VIP';
+    target.vip = true;
+    target.aiLimit = VIP_TOTAL_LIMIT;
+    target.aiUsed = 0;
+    target.updatedAt = new Date().toISOString();
+
+    saveDb();
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        `<b>🏆 VIP BERHASIL DIAKTIFKAN</b>\n\n` +
+        `👤 User: <code>@${username}</code>\n` +
+        `🏆 Status: <b>VIP</b>\n` +
+        `💎 Limit: <b>${VIP_TOTAL_LIMIT}</b>\n` +
+        `🎁 Bonus: <b>+${VIP_BONUS_LIMIT}</b>\n` +
+        `♾️ Total akses AI: <b>${VIP_TOTAL_LIMIT} chat</b>`
+    );
+});
+
+
+// ============================================================
+// .CEKLIMIT
+// ============================================================
+
+bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
+
+    const rawUsername = String(match?.[1] || '').trim();
+
+    // Kalau kosong, cek diri sendiri
+    if (!rawUsername) {
+
+        const info = getUserLimitInfo(msg);
+        const username = normalizeUsername(msg.from?.username);
+
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>📊 STATUS LIMIT AI</b>\n\n` +
+            `👤 Username: <code>@${username || 'tidak tersedia'}</code>\n` +
+            `🏷️ Status: <b>${getStatusLabel(info.status)}</b>\n` +
+            `💬 Limit: <b>${getLimitLabel(info)}</b>\n` +
+            `📈 Terpakai: <b>${info.used}</b>\n\n` +
+            (info.unlimited
+                ? `👑 Owner mendapatkan akses <b>Unlimited ∞</b>.`
+                : `Gunakan limit hanya untuk <b>obrolan AI</b>.`)
+        );
+
+        return;
+    }
+
+    // Username wajib menggunakan @
+    if (!rawUsername.startsWith('@')) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>⚠️ FORMAT SALAH</b>\n\n` +
+            `<b>Format:</b>\n` +
+            `<code>.ceklimit @username</code>\n\n` +
+            `<i>Contoh:</i>\n` +
+            `<code>.ceklimit @vickyyvall</code>`
+        );
+        return;
+    }
+
+    const username = normalizeUsername(rawUsername);
+    const target = findUserByUsername(username);
+
+    if (!target) {
+        await sendReply(
+            bot,
+            msg.chat.id,
+            `<b>🔎 USER BELUM DITEMUKAN</b>\n\n` +
+            `Username <code>@${username}</code> belum ditemukan di database bot.`
+        );
+        return;
+    }
+
+    const fakeMsg = {
+        from: {
+            id: target.userId,
+            username: target.username,
+            first_name: target.firstName,
+            last_name: target.lastName
+        }
+    };
+
+    const info = getUserLimitInfo(fakeMsg);
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        `<b>📊 CEK LIMIT USER</b>\n\n` +
+        `👤 Username: <code>@${username}</code>\n` +
+        `🏷️ Status: <b>${getStatusLabel(info.status)}</b>\n` +
+        `💬 Limit tersisa: <b>${getLimitLabel(info)}</b>\n` +
+        `📈 Terpakai: <b>${info.used}</b>\n` +
+        `🎁 Total paket: <b>${info.total ?? '∞'}</b>`
+    );
 });
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
@@ -1064,10 +1245,77 @@ if (data === 'order_am_later') {
     return;
 }
     try {
-        if (!chatId || !data.startsWith('ask|')) {
-            await bot.answerCallbackQuery(query.id);
-            return;
-        }
+        if (!chatId) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+}
+
+// ============================================================
+// UI BUTTONS
+// ============================================================
+
+if (data === 'ui|limit') {
+
+    await bot.answerCallbackQuery(query.id);
+
+    const fakeMsg = {
+        from: query.from || {}
+    };
+
+    const info = getUserLimitInfo(fakeMsg);
+
+    await sendReply(
+        bot,
+        chatId,
+        `<b>📊 LIMIT AI KAMU</b>\n\n` +
+        `╭━━━━━━━━━━━━━━━━━━╮\n` +
+        `┃ 👤 Status : <b>${getStatusLabel(info.status)}</b>\n` +
+        `┃ 💬 Limit  : <b>${getLimitLabel(info)}</b>\n` +
+        `┃ 📈 Terpakai : <b>${info.used}</b>\n` +
+        `╰━━━━━━━━━━━━━━━━━━╯\n\n` +
+        (info.unlimited
+            ? `👑 Owner mode aktif.\n<b>Unlimited ∞</b>`
+            : `ℹ️ Limit ini hanya digunakan untuk <b>obrolan AI</b>.\n` +
+              `Chat bot non-AI tidak mengurangi limit.`)
+    );
+
+    return;
+}
+
+
+if (data === 'ui|vip') {
+
+    await bot.answerCallbackQuery(query.id);
+
+    await sendReply(
+        bot,
+        chatId,
+        `<b>🏆 VIP vickyyvall - AI.</b>\n\n` +
+        `╭━━━━━━━━━━━━━━━━━━╮\n` +
+        `┃ 💎 Harga VIP : <b>Rp25.900</b>\n` +
+        `┃ 🗨️ Limit utama : <b>50</b>\n` +
+        `┃ 🎁 Bonus : <b>+25</b>\n` +
+        `┃ 💬 Total : <b>75 chat AI</b>\n` +
+        `╰━━━━━━━━━━━━━━━━━━╯\n\n` +
+        `💸 Harga normal: <s>Rp39.900</s>\n` +
+        `🔥 Harga sekarang: <b>Rp25.900</b>\n\n` +
+        `VIP memberikan tambahan akses AI.` +
+        `\n\n` +
+        `🛒 Kalau mau upgrade, hubungi <b>@vickyyvall</b>.`
+    );
+
+    return;
+}
+
+
+// ============================================================
+// AI CALLBACK
+// ============================================================
+
+if (!data.startsWith('ask|')) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+}
 
         const action = data.slice(4).trim();
         if (!action) {
@@ -1157,7 +1405,9 @@ bot.on('message', async (msg) => {
     const text = cleanText(msg.text || msg.caption || '');
     if (!text && !getMediaFromMessage(msg)) return;
     if (isCommand(text)) return;
-
+    
+if (/^\.addvip(?:\s|$)/i.test(text)) return;
+if (/^\.ceklimit(?:\s|$)/i.test(text)) return;
 const chatId = String(msg.chat.id);
 
 if (aiMutedChats.has(chatId)) return;
