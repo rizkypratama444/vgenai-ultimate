@@ -64,6 +64,149 @@ let activeApiKey = db.apiConfig?.apiKey || null;
 let activeModel = db.apiConfig?.model || null;
 let activeBaseUrl = db.apiConfig?.baseUrl || null;
 
+// ============================================================
+// 👑 USER ACCESS / VIP / AI LIMIT SYSTEM
+// ============================================================
+
+// Owner utama bot.
+// Username dipakai untuk identitas tampilan.
+// Nanti kita tambahkan verifikasi Telegram user ID juga.
+const OWNER_USERNAME = 'vickyyvall';
+
+// Limit AI.
+const NON_VIP_LIMIT = 10;
+const VIP_BASE_LIMIT = 50;
+const VIP_BONUS_LIMIT = 25;
+const VIP_TOTAL_LIMIT = VIP_BASE_LIMIT + VIP_BONUS_LIMIT;
+
+// Harga VIP.
+const VIP_PRICE = 25900;
+const VIP_NORMAL_PRICE = 39900;
+
+// Pastikan database user tersedia tanpa merusak data API lama.
+if (!db.users || typeof db.users !== 'object' || Array.isArray(db.users)) {
+    db.users = {};
+}
+
+function normalizeUsername(username) {
+    return String(username || '')
+        .trim()
+        .replace(/^@+/, '')
+        .toLowerCase();
+}
+
+function getUserKey(userId) {
+    return String(userId || '').trim();
+}
+
+function isOwner(msgOrUser) {
+    const user = msgOrUser?.from || msgOrUser || {};
+    const username = normalizeUsername(user.username);
+
+    return username === OWNER_USERNAME;
+}
+
+function getUserRecord(msg) {
+    const user = msg?.from || {};
+    const userId = getUserKey(user.id);
+
+    if (!userId) return null;
+
+    if (!db.users[userId]) {
+        db.users[userId] = {
+            userId,
+            username: normalizeUsername(user.username),
+            firstName: String(user.first_name || ''),
+            lastName: String(user.last_name || ''),
+            status: isOwner(msg) ? 'OWNER' : 'NONVIP',
+            vip: isOwner(msg),
+            aiLimit: isOwner(msg) ? null : NON_VIP_LIMIT,
+            aiUsed: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+
+        saveDb();
+    } else {
+        // Update data Telegram yang memang boleh berubah.
+        const record = db.users[userId];
+
+        record.username = normalizeUsername(user.username);
+        record.firstName = String(user.first_name || '');
+        record.lastName = String(user.last_name || '');
+        record.updatedAt = new Date().toISOString();
+
+        // Owner selalu mendapatkan akses Unlimited.
+        if (isOwner(msg)) {
+            record.status = 'OWNER';
+            record.vip = true;
+            record.aiLimit = null;
+        }
+
+        saveDb();
+    }
+
+    return db.users[userId];
+}
+
+function getUserLimitInfo(msg) {
+    const user = getUserRecord(msg);
+
+    if (!user) {
+        return {
+            status: 'NONVIP',
+            total: NON_VIP_LIMIT,
+            used: 0,
+            remaining: NON_VIP_LIMIT,
+            unlimited: false
+        };
+    }
+
+    if (user.status === 'OWNER') {
+        return {
+            status: 'OWNER',
+            total: null,
+            used: Number(user.aiUsed || 0),
+            remaining: null,
+            unlimited: true
+        };
+    }
+
+    if (user.status === 'VIP' || user.vip === true) {
+        return {
+            status: 'VIP',
+            total: VIP_TOTAL_LIMIT,
+            used: Number(user.aiUsed || 0),
+            remaining: Math.max(0, VIP_TOTAL_LIMIT - Number(user.aiUsed || 0)),
+            unlimited: false
+        };
+    }
+
+    return {
+        status: 'NONVIP',
+        total: NON_VIP_LIMIT,
+        used: Number(user.aiUsed || 0),
+        remaining: Math.max(0, NON_VIP_LIMIT - Number(user.aiUsed || 0)),
+        unlimited: false
+    };
+}
+
+function formatRupiah(number) {
+    return new Intl.NumberFormat('id-ID').format(Number(number || 0));
+}
+
+function getStatusLabel(status) {
+    if (status === 'OWNER') return '👑 OWNER';
+    if (status === 'VIP') return '🏆 VIP';
+    return '👤 NON-VIP';
+}
+
+function getLimitLabel(info) {
+    if (info.unlimited) return 'Unlimited ∞';
+
+    return `${info.remaining} / ${info.total}`;
+}
+
 // Memori per chat Telegram.
 const userHistory = new Map();
 const aiMutedChats = new Set();
