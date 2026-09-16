@@ -458,11 +458,11 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
                     if (url && /^https?:\/\/\S+$/i.test(url)) {
                         validButtons.push({ text: btnText, url });
                     }
-                    if (validButtons.length >= 2) break;
+                    if (validButtons.length >= 4) break;
                 }
             }
         if (validButtons.length > 0) {
-            inline_keyboard = [validButtons.slice(0, 2)];
+            inline_keyboard = [validButtons.slice(0, 4)];
         }
     } catch (error) {
         console.error('[BUTTON PARSER ERROR]', error.message);
@@ -471,19 +471,34 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
 }
 
 // ============================================================
-// FIX BUTTON AM PREM & BUTTON REKOMENDASI (AUTO-FALLBACK)
+// FIX BUTTON AM PREM + AI-GENERATED BUTTONS
 // ============================================================
 
-// FIX 1: Kalo AI ngirim promo AM Prem tapi LUPA ngasih tombol beli, paksa munculin!
+// AM PREM tetap punya tombol khusus karena ini memang fitur bisnis.
 if (imageToSent === 'https://ibb.co.com/Tx5ND8rF' && inline_keyboard.length === 0) {
-    inline_keyboard = [[{ text: "🛒 Chat vickyyvall Sekarang", url: "https://t.me/vickyyvall" }]];
+    inline_keyboard = [[
+        {
+            text: "🛒 Chat vickyyvall Sekarang",
+            url: "https://t.me/vickyyvall"
+        }
+    ]];
 }
 
-// FIX 2: Kalo bener-bener ga ada tombol (dan bukan promo), paksa munculin BUTTON REKOMENDASI biar rame!
-if (inline_keyboard.length === 0 && Math.random() > 0.3) { 
-    // Kasih probabilitas 70% munculin tombol rekomendasi ngambil dari START_BUTTON_POOL
-    inline_keyboard = [randomStartButtons()];
-}
+// JANGAN paksa tombol rekomendasi generik.
+// Jika AI membuat tombol sendiri, gunakan tombol AI tersebut.
+// Jika AI tidak membuat tombol, biarkan tidak ada tombol.
+//
+// Tujuannya:
+// AI SENDIRI yang menentukan apakah tombol diperlukan,
+// berapa jumlahnya, apa topiknya, dan apakah memakai emoji.
+//
+// Tidak ada lagi:
+// - randomStartButtons()
+// - START_BUTTON_POOL sebagai fallback
+// - tombol "Trik hp"
+// - tombol "Fakta random"
+// - tombol "Rekomendasi musik"
+// - tombol generik lain yang tidak berkaitan dengan percakapan.
 
 if (!text && !imageToSent && !fileToSend) {
     text = '😭 AI nggak menghasilkan jawaban kali ini.';
