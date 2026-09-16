@@ -458,11 +458,11 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
                     if (url && /^https?:\/\/\S+$/i.test(url)) {
                         validButtons.push({ text: btnText, url });
                     }
-                    if (validButtons.length >= 4) break;
+                    if (validButtons.length >= 3) break;
                 }
             }
         if (validButtons.length > 0) {
-            inline_keyboard = [validButtons.slice(0, 4)];
+            inline_keyboard = [validButtons.slice(0, 3)];
         }
     } catch (error) {
         console.error('[BUTTON PARSER ERROR]', error.message);
@@ -478,7 +478,7 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
 if (imageToSent === 'https://ibb.co.com/Tx5ND8rF' && inline_keyboard.length === 0) {
     inline_keyboard = [[
         {
-            text: "🛒 Chat vickyyvall Sekarang",
+            text: "🛒 Chat vickyyvall Now!",
             url: "https://t.me/vickyyvall"
         }
     ]];
