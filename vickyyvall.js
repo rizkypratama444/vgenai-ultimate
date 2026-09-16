@@ -280,16 +280,41 @@ function splitForTelegram(text, max = 4000) {
 }
 
 async function sendReply(bot, chatId, text, extra = {}) {
-    if (!text) return; // Kalo kosong jangan dikirim
+
+    if (!text) return;
+
     const htmlText = convertMarkdownToHTML(text);
+
     for (const chunk of splitForTelegram(htmlText)) {
+
         try {
-            await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', ...extra });
-        } catch (e) {
-            // Fallback otomatis ke Text Biasa jika HTML parsing crash
-            console.error('[SEND REPLY HTML ERROR, FALLBACK TO PLAIN TEXT]', e.message);
+
+            await bot.sendMessage(
+                chatId,
+                chunk,
+                {
+                    parse_mode: 'HTML',
+                    ...extra
+                }
+            );
+
+        } catch (error) {
+
+            console.error(
+                '[SEND REPLY HTML ERROR, FALLBACK TO PLAIN TEXT]',
+                error.message
+            );
+
             const plainText = chunk.replace(/<[^>]*>?/gm, '');
-            await bot.sendMessage(chatId, plainText, { ...extra, parse_mode: undefined });
+
+            await bot.sendMessage(
+                chatId,
+                plainText,
+                {
+                    ...extra,
+                    parse_mode: undefined
+                }
+            );
         }
     }
 }
@@ -410,14 +435,21 @@ const keyboard = [
 
     try {
         await bot.sendPhoto(msg.chat.id, mediaUrl, {
-            caption: text,
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: keyboard }
-        });
+    caption: text,
+    parse_mode: 'HTML',
+    reply_to_message_id: msg.message_id,
+    reply_markup: { inline_keyboard: keyboard }
+});
     } catch (error) {
-        await sendReply(bot, msg.chat.id, text, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
+        await sendReply(
+    bot,
+    msg.chat.id,
+    text,
+    {
+        reply_to_message_id: msg.message_id,
+        reply_markup: { inline_keyboard: keyboard }
+    }
+); 
     }
 });
 
@@ -454,19 +486,48 @@ function getPrettyUserName(user) {
 
 
 bot.onText(/^\/mute(?:@\w+)?$/i, async (msg) => {
+
     aiMutedChats.add(String(msg.chat.id));
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.');
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        'Respon AI dimatikan untuk chat ini. Pakai /unmute kalau mau mengaktifkannya lagi.',
+        {
+            reply_to_message_id: msg.message_id
+        }
+    );
 });
+
 
 bot.onText(/^\/unmute(?:@\w+)?$/i, async (msg) => {
+
     aiMutedChats.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Respon AI diaktifkan lagi.');
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        'Respon AI diaktifkan lagi.',
+        {
+            reply_to_message_id: msg.message_id
+        }
+    );
 });
 
+
 bot.onText(/^\/reset(?:@\w+)?$/i, async (msg) => {
+
     userHistory.delete(String(msg.chat.id));
-    await sendReply(bot, msg.chat.id, 'Memori percakapan chat ini sudah direset.');
+
+    await sendReply(
+        bot,
+        msg.chat.id,
+        'Memori percakapan chat ini sudah direset.',
+        {
+            reply_to_message_id: msg.message_id
+        }
+    );
 });
 
 // ============================================================
@@ -577,9 +638,11 @@ bot.onText(/^\.addvip(?:\s+(.+))?$/i, async (msg, match) => {
         `├ Limit utama : 50\n` +
         `└ Bonus : +25\n\n` +
         `💎 Harga : <b>Rp25.900</b>` +
-        `</blockquote>`
+                `</blockquote>`,
+        {
+            reply_to_message_id: msg.message_id
+        }
     );
-});
 
 // ============================================================
 // 📊 .CEKLIMIT
@@ -605,10 +668,10 @@ bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
         const limit = getLimitLabel(info);
 
         const explanation = info.unlimited
-            ? `👑 Karena akun lu adalah <b>OWNER</b>, akses AI lu tidak dibatasi jumlah chat.`
-            : info.status === 'VIP'
-                ? `💎 Status <b>VIP</b> memberikan paket limit AI khusus. Setiap kali lu benar-benar ngobrol dengan AI, pemakaian akan dihitung dari limit tersebut.`
-                : `ℹ️ Limit ini hanya berkurang ketika lu memakai fitur <b>AI chat</b>. Command bot, /start, cek limit, dan menu biasa tidak mengurangi limit AI.`;
+    ? `👑 Lu adalah owner, jadi akses vickyyvall  - AI lu unlimited.`
+    : info.status === 'VIP'
+        ? `💎 akun VIP punya 75 chat AI. setiap kali lu ngobrol langsung dengan AI, 1 limit terpakai.`
+        : `ℹ️ limit cuma kepotong saat lu memakai AI. /start, command, cek limit, dan menu biasa nggak mengurangi limit.`;
 
         await sendReply(
             bot,
@@ -836,6 +899,154 @@ function buildLimitExpiredMessage(info) {
                 }
             ]
         ]
+    };
+}
+
+// ============================================================
+// 📎 TELEGRAM MEDIA HANDLER
+// ============================================================
+
+async function downloadTelegramFile(fileId) {
+    try {
+        const file = await bot.getFile(fileId);
+
+        if (!file?.file_path) {
+            return null;
+        }
+
+        const url =
+            `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+        const res = await fetch(url);
+
+        if (!res.ok) {
+            throw new Error(`Download Telegram gagal (${res.status})`);
+        }
+
+        const buffer = Buffer.from(await res.arrayBuffer());
+
+        return {
+            buffer,
+            filePath: file.file_path
+        };
+
+    } catch (error) {
+        console.error('[MEDIA DOWNLOAD]', error.message);
+        return null;
+    }
+}
+
+
+function getMediaFromMessage(msg) {
+
+    // FOTO TELEGRAM
+    if (msg.photo?.length) {
+        return {
+            fileId: msg.photo[msg.photo.length - 1].file_id,
+            mediaType: 'image',
+            mimeType: 'image/jpeg',
+            fileName: 'telegram-photo.jpg'
+        };
+    }
+
+    // DOKUMEN / FILE
+    if (msg.document) {
+        return {
+            fileId: msg.document.file_id,
+            mediaType: 'document',
+            mimeType: msg.document.mime_type || 'application/octet-stream',
+            fileName: msg.document.file_name || 'document'
+        };
+    }
+
+    return null;
+}
+
+
+async function buildMediaPrompt(msg, basePrompt) {
+
+    const media = getMediaFromMessage(msg);
+
+    // Pesan biasa tanpa media
+    if (!media) {
+        return {
+            finalPrompt: basePrompt,
+            base64Media: null,
+            mimeTypeMedia: null
+        };
+    }
+
+    const downloaded = await downloadTelegramFile(media.fileId);
+
+    if (!downloaded) {
+        return {
+            finalPrompt:
+                `[Sistem: Lampiran Telegram tidak berhasil diunduh.]\n\n${basePrompt}`,
+            base64Media: null,
+            mimeTypeMedia: null
+        };
+    }
+
+
+    // =========================================================
+    // 📄 FILE / DOKUMEN
+    // =========================================================
+
+    if (media.mediaType === 'document') {
+
+        const lowerName = media.fileName.toLowerCase();
+
+        const readable =
+            media.mimeType.includes('text') ||
+            media.mimeType.includes('json') ||
+            media.mimeType.includes('javascript') ||
+            /\.(js|json|txt|csv|html|css|py|md)$/i.test(lowerName);
+
+        // File teks yang bisa langsung dibaca AI
+        if (readable) {
+
+            const fileText =
+                downloaded.buffer
+                    .toString('utf8')
+                    .slice(0, MAX_TEXT_FILE);
+
+            return {
+                finalPrompt:
+                    `[Sistem: Pengguna mengirim dokumen "${media.fileName}".]\n` +
+                    `Isi Dokumen:\n` +
+                    '```\n' +
+                    fileText +
+                    '\n```\n\n' +
+                    `Pesan pengguna:\n${basePrompt}`,
+
+                base64Media: null,
+                mimeTypeMedia: null
+            };
+        }
+
+        // File binary / dokumen yang tidak dibaca sebagai teks
+        return {
+            finalPrompt:
+                `[Sistem: Pengguna mengirim lampiran dokumen "${media.fileName}".]\n\n` +
+                basePrompt,
+
+            base64Media: null,
+            mimeTypeMedia: media.mimeType
+        };
+    }
+
+
+    // =========================================================
+    // 🖼️ GAMBAR
+    // =========================================================
+
+    return {
+        finalPrompt:
+            `[Sistem: Pengguna mengirim gambar. Analisa gambar tersebut.]\n\n` +
+            basePrompt,
+
+        base64Media: downloaded.buffer.toString('base64'),
+        mimeTypeMedia: 'image/jpeg'
     };
 }
 
@@ -1152,9 +1363,11 @@ if (data === 'ui|limit') {
         (info.unlimited
             ? `👑 Owner mode aktif.\n<b>Unlimited ∞</b>`
             : `ℹ️ Limit ini hanya digunakan untuk <b>obrolan AI</b>.\n` +
-              `Chat bot non-AI tidak mengurangi limit.`)
+              `Chat bot non-AI tidak mengurangi limit.`),
+        {
+            reply_to_message_id: query.message?.message_id
+        }
     );
-
     return;
 }
 
@@ -1177,7 +1390,10 @@ if (data === 'ui|vip') {
         `🔥 Harga sekarang: <b>Rp25.900</b>\n\n` +
         `VIP memberikan tambahan akses AI.` +
         `\n\n` +
-        `🛒 Kalau mau upgrade, hubungi <b>@vickyyvall</b>.`
+        `🛒 Kalau mau upgrade, hubungi <b>@vickyyvall</b>.`,
+        {
+            reply_to_message_id: query.message?.message_id
+        }
     );
 
     return;
@@ -1235,20 +1451,21 @@ if (!limitCheck.allowed) {
     const expired = buildLimitExpiredMessage(limitCheck.info);
 
     await bot.answerCallbackQuery(query.id, {
-        text: 'AI limit lu sudah habis 😭',
+        text: 'Limit AI lu udah habis 😭',
         show_alert: false
     });
 
     await sendReply(
-        bot,
-        chatId,
-        expired.text,
-        {
-            reply_markup: {
-                inline_keyboard: expired.keyboard
-            }
+    bot,
+    chatId,
+    expired.text,
+    {
+        reply_to_message_id: query.message?.message_id,
+        reply_markup: {
+            inline_keyboard: expired.keyboard
         }
-    );
+    }
+);
 
     return;
 }
@@ -1299,15 +1516,16 @@ if (!limitCheck.allowed) {
     const expired = buildLimitExpiredMessage(limitCheck.info);
 
     await sendReply(
-        bot,
-        chatId,
-        expired.text,
-        {
-            reply_markup: {
-                inline_keyboard: expired.keyboard
-            }
+    bot,
+    chatId,
+    expired.text,
+    {
+        reply_to_message_id: msg.message_id,
+        reply_markup: {
+            inline_keyboard: expired.keyboard
         }
-    );
+    }
+);
 
     return;
 }
@@ -1335,7 +1553,14 @@ try {
     } catch (error) {
         const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
         console.error('[AI CORE ERROR]', realError);
-        await sendReply(bot, msg.chat.id, `VGen Engine terkendala.\n\nDetail: ${realError}`);
+        await sendReply(
+    bot,
+    msg.chat.id,
+    `VGen Engine terkendala.\n\nDetail: ${realError}`,
+    {
+        reply_to_message_id: msg.message_id
+    }
+);
     }
 });
 
