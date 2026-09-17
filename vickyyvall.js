@@ -1810,6 +1810,18 @@ try {
     aiBusyChats.delete(chatId);
 }
 
+} catch (error) {
+    console.error('[CALLBACK ENGINE ERROR]', error?.message || error);
+
+    try {
+        await bot.answerCallbackQuery(query.id, {
+            text: 'Terjadi kendala. Coba lagi sebentar.',
+            show_alert: false
+        });
+    } catch (e) {}
+}
+});
+
 // ============================================================
 // CHAT LISTENER
 // ============================================================
