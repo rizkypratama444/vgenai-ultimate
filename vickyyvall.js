@@ -222,6 +222,16 @@ function getLimitLabel(info) {
 const userHistory = new Map();
 const aiMutedChats = new Set();
 
+// ============================================================
+// 🔒 AI BUTTON ANTI-SPAM
+// ============================================================
+const usedAIButtons = new Set();
+
+// ============================================================
+// 🧠 AI RESPONSE ANTI-SPAM
+// ============================================================
+const aiBusyChats = new Set();
+
 function historyFor(chatId) {
     const key = String(chatId);
     if (!userHistory.has(key)) userHistory.set(key, []);
@@ -1315,10 +1325,16 @@ function buildMembershipText() {
 // ============================================================
 // CORE MESSAGE & CALLBACK PARSER
 // ============================================================
-async function processAIResponse(chatId, rawResponse, replyToId, sourcePrompt = '', limitInfo = null) {
+async function processAIResponse(
+    chatId,
+    rawResponse,
+    replyToId,
+    sourcePrompt = '',
+    limitInfo = null,
+    replyOptions = null
+) {
+	
     let text = String(rawResponse || '').trim();
-
-    // HAPUS INFO SISTEM / INTERNAL THINKING / META-REASONING YANG KEBOCOR.
     text = stripInternalLeakage(text);
 
     // 1. EXTRACT IMAGE (NEW SAFE SYNTAX <<<IMAGE: ...>>>)
@@ -1439,12 +1455,22 @@ if (!text && !imageToSent && !fileToSend) {
     }
 
     // Kirim Teks + Tombol
-    let extraOptions = { reply_to_message_id: replyToId };
-    if (inline_keyboard.length > 0) {
-        extraOptions.reply_markup = { inline_keyboard };
-    }
+    let extraOptions = replyOptions && typeof replyOptions === 'object'
+    ? { ...replyOptions }
+    : { reply_to_message_id: replyToId };
 
-    await sendReply(bot, chatId, text, extraOptions);
+if (inline_keyboard.length > 0) {
+    extraOptions.reply_markup = {
+        inline_keyboard
+    };
+}
+
+await sendReply(
+    bot,
+    chatId,
+    text,
+    extraOptions
+);
     return text;
 }
 
@@ -1596,10 +1622,61 @@ if (!data.startsWith('ask|')) {
 }
 
         const action = data.slice(4).trim();
-        if (!action) {
-            await bot.answerCallbackQuery(query.id);
-            return;
+
+if (!action) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+}
+
+// ============================================================
+// 🔒 ANTI-SPAM BUTTON AI
+// ============================================================
+// Hanya callback ask| yang masuk ke sini.
+// Tombol manual/non-AI tidak memakai sistem lock ini.
+const buttonMessageId = query.message?.message_id;
+const buttonKey = `${chatId}:${buttonMessageId}:${data}`;
+
+if (usedAIButtons.has(buttonKey)) {
+    await bot.answerCallbackQuery(query.id, {
+        text: 'Anda sudah memilih tombol ini.',
+        show_alert: false
+    });
+    return;
+}
+
+if (aiBusyChats.has(chatId)) {
+    await bot.answerCallbackQuery(query.id, {
+        text: 'AI masih ngerjain respons sebelumnya 😭 tunggu bentar.',
+        show_alert: false
+    });
+    return;
+}
+usedAIButtons.add(buttonKey);
+
+
+// Hapus tombol AI yang baru saja dipencet.
+// Tombol lain di pesan tersebut tetap dipertahankan.
+try {
+    const currentKeyboard =
+        query.message?.reply_markup?.inline_keyboard || [];
+
+    const updatedKeyboard = currentKeyboard
+        .map(row =>
+            row.filter(button => button.callback_data !== data)
+        )
+        .filter(row => row.length > 0);
+
+    await bot.editMessageReplyMarkup(
+        { inline_keyboard: updatedKeyboard },
+        {
+            chat_id: chatId,
+            message_id: buttonMessageId
         }
+    );
+} catch (e) {
+    // Lock tetap aktif walaupun edit keyboard gagal.
+    console.error('[AI BUTTON LOCK UI ERROR]', e.message);
+}
         
         // MUNCULIN NOTIFIKASI BORDER DI ATAS PAS BUTTON DIKLIK (TOAST)
         await bot.answerCallbackQuery(query.id, { 
@@ -1613,69 +1690,125 @@ if (!data.startsWith('ask|')) {
             `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]\n\n` +
             `Permintaan pengguna dari tombol:\n${action}`;
 
+aiBusyChats.add(chatId);
+
+try {
+    // Pesan sementara yang akan dijadikan target QUOTE AI.
+    const selectedMessage = await bot.sendMessage(
+        chatId,
+        action
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;'),
+        {
+            parse_mode: 'HTML',
+            reply_to_message_id: query.message?.message_id
+        }
+    );
+
+    // ============================================================
+    // 🔐 LIMIT CHECK UNTUK BUTTON AI
+    // ============================================================
+
+    const callbackUser = query.from || {};
+    const callbackMsg = {
+        from: callbackUser,
+        chat: query.message?.chat || {},
+        message_id: query.message?.message_id
+    };
+
+    const limitCheck = consumeAiLimit(callbackMsg);
+
+    if (!limitCheck.allowed) {
+        const expired = buildLimitExpiredMessage(limitCheck.info);
+
+        await bot.answerCallbackQuery(query.id, {
+            text: 'Limit AI lu udah habis 😭',
+            show_alert: false
+        });
+
         await sendReply(
             bot,
             chatId,
-            `<i>your selected:</i> ${action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
-            { reply_to_message_id: query.message?.message_id }
+            expired.text,
+            {
+                reply_to_message_id: query.message?.message_id,
+                reply_markup: {
+                    inline_keyboard: expired.keyboard
+                }
+            }
         );
 
-        // ============================================================
-// 🔐 LIMIT CHECK UNTUK BUTTON AI
-// ============================================================
+        try {
+            await bot.deleteMessage(chatId, selectedMessage.message_id);
+        } catch (e) {}
 
-const callbackUser = query.from || {};
-const callbackMsg = {
-    from: callbackUser,
-    chat: query.message?.chat || {},
-    message_id: query.message?.message_id
-};
-
-const limitCheck = consumeAiLimit(callbackMsg);
-
-if (!limitCheck.allowed) {
-    const expired = buildLimitExpiredMessage(limitCheck.info);
-
-    await bot.answerCallbackQuery(query.id, {
-        text: 'Limit AI lu udah habis 😭',
-        show_alert: false
-    });
-
-    await sendReply(
-    bot,
-    chatId,
-    expired.text,
-    {
-        reply_to_message_id: query.message?.message_id,
-        reply_markup: {
-            inline_keyboard: expired.keyboard
-        }
+        return;
     }
-);
 
-    return;
+    const stopRecordingPresence = startRecordingPresence(chatId);
+    let response;
+
+    try {
+        response = await askAI(
+            chatId,
+            finalPrompt,
+            null,
+            null,
+            selectedMessage.message_id
+        );
+    } finally {
+        stopRecordingPresence();
+    }
+
+    const finalSavedText = await processAIResponse(
+        chatId,
+        response,
+        selectedMessage.message_id,
+        finalPrompt,
+        limitCheck.info,
+        {
+            reply_parameters: {
+                message_id: selectedMessage.message_id,
+                quote: action
+            }
+        }
+    );
+
+    // Hapus pesan pilihan setelah AI membalas.
+    try {
+        await bot.deleteMessage(
+            chatId,
+            selectedMessage.message_id
+        );
+    } catch (e) {
+        console.error(
+            '[DELETE SELECTED MESSAGE ERROR]',
+            e.message
+        );
+    }
+
+    pushHistory(chatId, 'user', finalPrompt);
+    pushHistory(chatId, 'assistant', finalSavedText);
+
+} catch (error) {
+
+    console.error('[AI BUTTON ERROR]', error);
+
+    try {
+        await sendReply(
+            bot,
+            chatId,
+            '😭 Waduh, tombolnya kepencet tapi AI lagi ngadrt. Coba kirim pertanyaannya langsung.'
+        );
+    } catch {}
+
+} finally {
+
+    // WAJIB dibuka lagi dalam kondisi apa pun:
+    // sukses, limit habis, error, atau proses berhenti.
+    aiBusyChats.delete(chatId);
 }
-
-const stopRecordingPresence = startRecordingPresence(chatId);
-let response;
-
-try {
-    response = await askAI(chatId, finalPrompt, null, null, query.message?.message_id);
-        } finally {
-            stopRecordingPresence();
-        }
-
-        const finalSavedText = await processAIResponse(chatId, response, query.message?.message_id, finalPrompt, limitCheck.info);
-        
-        pushHistory(chatId, 'user', finalPrompt);
-        pushHistory(chatId, 'assistant', finalSavedText);
-
-    } catch (error) {
-        if (chatId) {
-            try { await sendReply(bot, chatId, '😭 Waduh tombolnya kepencet tapi AI lagi ngadat. Coba pencet lagi atau kirim pertanyaannya langsung.'); } catch {}
-        }
-    }
-});
 
 // ============================================================
 // CHAT LISTENER
@@ -1693,9 +1826,17 @@ if (aiMutedChats.has(chatId)) return;
 if (msg.date && Math.floor(Date.now() / 1000) - msg.date > 120) return;
 
 // ============================================================
+// 🚫 ANTI-SPAM AI RESPONSE
+// ============================================================
+if (aiBusyChats.has(chatId)) {
+    return;
+}
+
+aiBusyChats.add(chatId);
+
+// ============================================================
 // 🔐 LIMIT HANYA UNTUK AI CHAT
 // ============================================================
-
 const limitCheck = consumeAiLimit(msg);
 
 if (!limitCheck.allowed) {
@@ -1713,6 +1854,7 @@ if (!limitCheck.allowed) {
     }
 );
 
+aiBusyChats.delete(chatId);
     return;
 }
 
@@ -1738,14 +1880,19 @@ try {
             stopRecordingPresence();
         }
 
-        if (aiMutedChats.has(chatId)) return;
+        if (aiMutedChats.has(chatId)) {
+    aiBusyChats.delete(chatId);
+    return;
+}
 
         const finalSavedText = await processAIResponse(chatId, response, msg.message_id, text || '', limitCheck.info);
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', finalSavedText);
+       aiBusyChats.delete(chatId);
 
     } catch (error) {
+    	aiBusyChats.delete(chatId);
         const realError = String(error.message || error).replace(/\n/g, ' ').slice(0, 500);
         console.error('[AI CORE ERROR]', realError);
         await sendReply(
