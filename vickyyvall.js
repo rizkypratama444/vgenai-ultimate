@@ -60,9 +60,12 @@ function saveDb() {
 }
 
 let activeProvider = db.apiConfig?.provider || null;
-let activeApiKey = db.apiConfig?.apiKey || null;
-let activeModel = db.apiConfig?.model || null;
-let activeBaseUrl = db.apiConfig?.baseUrl || null;
+let activeKeys = db.apiConfig?.keys || []; // Nampung semua key dari HTML
+let currentKeyIndex = db.apiConfig?.currentKeyIndex || 0;
+let currentModelIndex = db.apiConfig?.currentModelIndex || 0;
+
+// MUTLAK: MODEL YANG LU CIPTAIN GA DIUBAH!
+const ROTATION_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash'];
 
 // ============================================================
 // 👑 USER ACCESS / VIP / AI LIMIT SYSTEM
@@ -1057,66 +1060,101 @@ async function buildMediaPrompt(msg, basePrompt) {
     };
 }
 
-async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia) {
-    if (!activeApiKey || !activeModel || !activeProvider) {
-        throw new Error('Provider/API key/model belum dikonfigurasi.');
-    }
+const delay = ms => new Promise(res => setTimeout(res, ms));
 
+async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, currentKey, currentModel) {
     const history = historyFor(chatId);
+    const contents = history.map(h => ({
+        role: h.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: h.content }]
+    }));
 
-    if (activeProvider === 'OPENAI') {
-        let userContent = finalPrompt;
-        if (base64Media) {
-            userContent = [
-                { type: 'text', text: finalPrompt },
-                { type: 'image_url', image_url: { url: `data:${mimeTypeMedia || 'image/jpeg'};base64,${base64Media}` } }
-            ];
+    const parts = [{ text: finalPrompt }];
+    if (base64Media) {
+        parts.push({ inline_data: { mime_type: mimeTypeMedia || 'image/jpeg', data: base64Media } });
+    }
+    contents.push({ role: 'user', parts });
+
+    const systemInstructionText = typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt);
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent?key=${encodeURIComponent(currentKey)}`;
+    
+    const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system_instruction: { parts: [{ text: systemInstructionText }] }, contents })
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) {
+        const errMsg = data.error?.message || `Gemini HTTP ${res.status}`;
+        // Deteksi Limit 429 atau kuota meluap
+        if (res.status === 429 || res.status === 503 || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('limit')) {
+            throw new Error('LIMIT_REACHED');
         }
+        throw new Error(errMsg);
+    }
+    return data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'Model tidak mengembalikan jawaban.';
+}
 
-        const messages = [
-            { role: 'system', content: typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt) },
-            ...history,
-            { role: 'user', content: userContent }
-        ];
-
-        const endpoint = activeBaseUrl || 'https://api.openai.com/v1/chat/completions';
-        const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${activeApiKey}` },
-            body: JSON.stringify({ model: activeModel, messages })
-        });
-
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
-        return data.choices?.[0]?.message?.content || 'Model tidak mengembalikan jawaban.';
+async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId = null) {
+    if (!activeKeys || activeKeys.length === 0) {
+        throw new Error('API key belum dikonfigurasi. Aktifin/Deploy dari HTML lu dulu ngab!');
     }
 
-    if (activeProvider === 'GEMINI') {
-        const contents = history.map(h => ({
-            role: h.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: h.content }]
-        }));
+    let attempts = 0;
+    let maxAttempts = activeKeys.length * ROTATION_MODELS.length; // Siklus mutlak tak terbatas
 
-        const parts = [{ text: finalPrompt }];
-        if (base64Media) {
-            parts.push({ inline_data: { mime_type: mimeTypeMedia || 'image/jpeg', data: base64Media } });
+    while (attempts < maxAttempts) {
+        const currentKey = activeKeys[currentKeyIndex].key || activeKeys[currentKeyIndex];
+        const currentModel = ROTATION_MODELS[currentModelIndex];
+        
+        try {
+            return await _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, currentKey, currentModel);
+        } catch (error) {
+            if (error.message === 'LIMIT_REACHED') {
+                attempts++;
+                
+                // CUMA SPAM DI PERCOBAAN PERTAMA BIAR LAWAN BICARA GA KABUR
+                if (attempts === 1 && replyToId) {
+                    try {
+                        // 1. Kutip pesan lawan bicara mutlak
+                        await bot.sendMessage(chatId, "⏳Loading", { reply_to_message_id: replyToId });
+                        
+                        // 2. Random delay 1-3 detik tanpa kutip
+                        await delay(1000);
+                        const randomWait = Math.floor(Math.random() * 2000) + 1000;
+                        await bot.sendMessage(chatId, "Server penuh, tunggu sebentar...");
+                        await delay(randomWait);
+
+                        // 3. Krusial terakhir tanpa kutip
+                        await delay(500);
+                        await bot.sendMessage(chatId, "AI Berevolusi kembali✅");
+                    } catch(e) {} 
+                }
+
+                // ROTASI SIKLUS BERULANG!
+                console.log(`[LIMIT] ${currentModel} di email ${activeKeys[currentKeyIndex].email} HABIS. Berevolusi!`);
+                currentModelIndex++;
+                
+                if (currentModelIndex >= ROTATION_MODELS.length) {
+                    // Pindah ke email selanjutnya, model balik ke Lite
+                    currentModelIndex = 0;
+                    currentKeyIndex++;
+                    if (currentKeyIndex >= activeKeys.length) {
+                        currentKeyIndex = 0; // Balik ke email pertama njir immortal
+                    }
+                }
+                
+                // Simpan state memori rotasi
+                db.apiConfig.currentKeyIndex = currentKeyIndex;
+                db.apiConfig.currentModelIndex = currentModelIndex;
+                saveDb();
+                continue; // Gas loop lagi!
+            }
+            throw error; // Kalo error lain murni dari syntax, biarin aja
         }
-        contents.push({ role: 'user', parts });
-
-        const systemInstructionText = typeof vgenPrompt === 'string' ? vgenPrompt : JSON.stringify(vgenPrompt);
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(activeApiKey)}`;
-        const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ system_instruction: { parts: [{ text: systemInstructionText }] }, contents })
-        });
-
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error?.message || `Gemini HTTP ${res.status}`);
-        return data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'Model tidak mengembalikan jawaban.';
     }
-
-    throw new Error(`Provider tidak dikenal: ${activeProvider}`);
+    throw new Error('Waduh, semua API Key dan model lagi ngadet parah 😭 coba hitungan menit lagi yaa!');
 }
 
 // ============================================================
@@ -1481,7 +1519,7 @@ const stopRecordingPresence = startRecordingPresence(chatId);
 let response;
 
 try {
-    response = await askAI(chatId, finalPrompt, null, null);
+    response = await askAI(chatId, finalPrompt, null, null, query.message?.message_id);
         } finally {
             stopRecordingPresence();
         }
@@ -1548,7 +1586,7 @@ try {
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
             const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
             const finalPrompt = `${currentTimeInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
-            response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia);
+            response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia, msg.message_id);
         } finally {
             stopRecordingPresence();
         }
@@ -1586,18 +1624,20 @@ app.get('/', (req, res) => {
 });
 
 app.post('/deploy-key', (req, res) => {
-    const { apiKey, provider, model, baseUrl } = req.body || {};
-    if (!apiKey || !model) {
-        return res.status(400).json({ error: 'API Key atau Model tidak boleh kosong!' });
+    const { keys, provider, model } = req.body || {};
+    if (!keys || !keys.length || !model) {
+        return res.status(400).json({ error: 'Keys array atau Model tidak boleh kosong!' });
     }
-    activeApiKey = apiKey;
-    activeProvider = String(provider || 'OPENAI').toUpperCase();
-    activeModel = model;
-    activeBaseUrl = baseUrl || null;
+    activeKeys = keys;
+    activeProvider = String(provider || 'GEMINI').toUpperCase();
+    
+    // Set rotasi awal sesuai pilihan lu di HTML
+    currentModelIndex = Math.max(0, ROTATION_MODELS.indexOf(model));
+    currentKeyIndex = 0; // Mulai dari email pertama
 
-    db.apiConfig = { apiKey: activeApiKey, provider: activeProvider, model: activeModel, ...(activeBaseUrl ? { baseUrl: activeBaseUrl } : {}) };
+    db.apiConfig = { keys: activeKeys, provider: activeProvider, currentKeyIndex, currentModelIndex };
     saveDb();
-    res.json({ success: true, message: `Sukses terhubung ke model: ${activeModel}` });
+    res.json({ success: true, message: `Sukses deploy ${keys.length} API Keys! Start: ${ROTATION_MODELS[currentModelIndex]}` });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
