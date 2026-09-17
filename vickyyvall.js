@@ -1730,7 +1730,7 @@ try {
     // Lock tetap aktif walaupun edit keyboard gagal.
     console.error('[AI BUTTON LOCK UI ERROR]', e.message);
 }
-        
+       
         // MUNCULIN NOTIFIKASI BORDER DI ATAS PAS BUTTON DIKLIK (TOAST)
         await bot.answerCallbackQuery(query.id, { 
             text: `Lagi diproses bentar ngab: ${action}...`, 
@@ -1824,12 +1824,7 @@ try {
             }
         }
     );
-
-    // 4. HAPUS PESAN PANCINGAN SEKARANG! (Biar dapet efek debu hangus dari Telegram!)
-    try {
-        await bot.deleteMessage(chatId, selectedMessage.message_id);
-    } catch (e) {}
-   
+  
     pushHistory(chatId, 'user', finalPrompt);
     pushHistory(chatId, 'assistant', finalSavedText);
 
