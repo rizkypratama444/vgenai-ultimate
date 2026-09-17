@@ -260,25 +260,52 @@ function isCommand(text) {
 // ============================================================
 function convertMarkdownToHTML(text) {
     if (!text) return '';
+
     let formatted = String(text);
+    const codeBlocks = [];
+    const inlineCodes = [];
 
-    // 1. Ubah list bawaan AI yang pake bintang (* Item) jadi minus (- Item)
+    // AMANKAN CODE BLOCK TERLEBIH DAHULU
+    // agar HTML/JS/CSS di dalam kode tetap plain text dan bisa disalin.
+    formatted = formatted.replace(/```(?:([a-zA-Z0-9_+#.-]+)\s*)?\n?([\s\S]*?)```/g, (match, language, code) => {
+        const index = codeBlocks.length;
+        const safeCode = String(code || '').replace(/^\n|\n$/g, '');
+
+        codeBlocks.push(
+            `<pre><code>${escapeHTML(safeCode)}</code></pre>`
+        );
+
+        return `\uE000CODEBLOCK${index}\uE000`;
+    });
+
+    // AMANKAN INLINE CODE
+    formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
+        const index = inlineCodes.length;
+
+        inlineCodes.push(
+            `<code>${escapeHTML(String(code))}</code>`
+        );
+
+        return `\uE000INLINECODE${index}\uE000`;
+    });
+
+    // MARKDOWN BIASA
     formatted = formatted.replace(/^\s*\*\s+/gm, '- ');
-
-    // 2. Ubah **Teks Tebal** (Double Asterisk) menjadi <b>Teks Tebal</b> tanpa bintang bocor
     formatted = formatted.replace(/\*\*([\s\S]*?)\*\*/g, '<b>$1</b>');
-
-    // 3. Ubah *Teks Miring* (Single Asterisk) menjadi <i>Teks Miring</i>
-    formatted = formatted.replace(/\*([\s\S]*?)\*/g, '<i>$1</i>');
-
-    // Ubah ```kode``` menjadi <pre><code>kode</code></pre>
-    formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-
-    // Ubah `kode` menjadi <code>kode</code>
-    formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-    // Rapikan bullet point liar
+    formatted = formatted.replace(/\*([^*\n]+)\*/g, '<i>$1</i>');
     formatted = formatted.replace(/[\uFFFD]/g, '•');
+
+    // KEMBALIKAN CODE BLOCK
+    formatted = formatted.replace(
+        /\uE000CODEBLOCK(\d+)\uE000/g,
+        (_, index) => codeBlocks[Number(index)] || ''
+    );
+
+    // KEMBALIKAN INLINE CODE
+    formatted = formatted.replace(
+        /\uE000INLINECODE(\d+)\uE000/g,
+        (_, index) => inlineCodes[Number(index)] || ''
+    );
 
     return formatted;
 }
@@ -1591,7 +1618,7 @@ try {
     `Total limit hariannya: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.total}. ` +
     `Sisa limit setelah pesan ini: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining}. ` +
     `Limit hanya berlaku untuk chat AI dan reset otomatis setiap 00.00 WIB Asia/Jakarta. ` +
-    `${limitCheck.info.status === 'NONVIP' && limitCheck.info.remaining <= 8 ? 'WAJIB beri peringatan limit yang mulai menipis secara natural dan promosi upgrade VIP.' : ''} ` +
+    `${limitCheck.info.status === 'NONVIP' && (limitCheck.info.remaining === 8 || limitCheck.info.remaining === 7) ? 'WAJIB beri peringatan limit yang mulai menipis secara natural dan promosi upgrade VIP.' : ''} ` +
     `${limitCheck.info.status === 'VIP' && limitCheck.info.remaining === 70 ? 'WAJIB beri peringatan bahwa sisa limit VIP sudah 70 dan limit reset setiap 00.00 WIB.' : ''}]`;
             // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
