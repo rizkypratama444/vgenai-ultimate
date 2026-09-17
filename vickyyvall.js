@@ -334,33 +334,52 @@ function splitForTelegram(text, max = 4000) {
 }
 
 async function sendReply(bot, chatId, text, extra = {}) {
-
     if (!text) return;
 
-    const htmlText = convertMarkdownToHTML(text);
+    let safeText = String(text).trim();
 
-    for (const chunk of splitForTelegram(htmlText)) {
+    // ============================================================
+    // 🔒 MUTLAK 1 GELEMBUNG TELEGRAM
+    // Maksimum dibuat sedikit di bawah batas Telegram
+    // agar tidak pernah masuk sistem split menjadi beberapa pesan.
+    // ============================================================
+    const MAX_ONE_BUBBLE = 3500;
+
+    if (safeText.length > MAX_ONE_BUBBLE) {
+        let cut = safeText.lastIndexOf('\n', MAX_ONE_BUBBLE);
+
+        if (cut < 1000) {
+            cut = MAX_ONE_BUBBLE;
+        }
+
+        safeText = safeText.slice(0, cut).trimEnd();
+
+        safeText += '\n\n…';
+    }
+
+    const htmlText = convertMarkdownToHTML(safeText);
+
+    try {
+        await bot.sendMessage(
+            chatId,
+            htmlText,
+            {
+                parse_mode: 'HTML',
+                ...extra
+            }
+        );
+    } catch (error) {
+        console.error(
+            '[SEND REPLY HTML ERROR, FALLBACK TO PLAIN TEXT]',
+            error.message
+        );
+
+        const plainText = htmlText
+            .replace(/<[^>]*>?/gm, '')
+            .slice(0, MAX_ONE_BUBBLE)
+            .trim();
 
         try {
-
-            await bot.sendMessage(
-                chatId,
-                chunk,
-                {
-                    parse_mode: 'HTML',
-                    ...extra
-                }
-            );
-
-        } catch (error) {
-
-            console.error(
-                '[SEND REPLY HTML ERROR, FALLBACK TO PLAIN TEXT]',
-                error.message
-            );
-
-            const plainText = chunk.replace(/<[^>]*>?/gm, '');
-
             await bot.sendMessage(
                 chatId,
                 plainText,
@@ -368,6 +387,11 @@ async function sendReply(bot, chatId, text, extra = {}) {
                     ...extra,
                     parse_mode: undefined
                 }
+            );
+        } catch (fallbackError) {
+            console.error(
+                '[SEND REPLY FALLBACK ERROR]',
+                fallbackError.message
             );
         }
     }
@@ -1110,8 +1134,15 @@ async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, curr
     const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system_instruction: { parts: [{ text: systemInstructionText }] }, contents })
-    });
+        body: JSON.stringify({
+    system_instruction: {
+        parts: [{ text: systemInstructionText }]
+    },
+    contents,
+    generationConfig: {
+        maxOutputTokens: 1000
+    }
+})
 
     const data = await res.json();
     if (!res.ok || data.error) {
@@ -1145,21 +1176,8 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
                 
                 // CUMA SPAM DI PERCOBAAN PERTAMA BIAR LAWAN BICARA GA KABUR
                 if (attempts === 1 && replyToId) {
-                    try {
-                        // 1. Kutip pesan lawan bicara mutlak
-                        await bot.sendMessage(chatId, "⏳Loading", { reply_to_message_id: replyToId });
-                        
-                        // 2. Random delay 1-3 detik tanpa kutip
-                        await delay(1000);
-                        const randomWait = Math.floor(Math.random() * 5000) + 5000;
-                        await bot.sendMessage(chatId, "Server sedang ramai, tunggu sebentar...");
-                        await delay(randomWait);
-
-                        // 3. Krusial terakhir tanpa kutip
-                        await delay(500);
-                        await bot.sendMessage(chatId, "AI Berevolusi kembali✅");
-                    } catch(e) {} 
-                }
+                console.log('[AI ROTATION] Model limit, pindah ke model berikutnya...');
+           }
 
                 // ROTASI SIKLUS BERULANG!
                 console.log(`[LIMIT] ${currentModel} di email ${activeKeys[currentKeyIndex].email} HABIS. Berevolusi!`);
@@ -1190,10 +1208,15 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
 // ============================================================
 // 🧠 BLACKTICK / BUSINESS / LIMIT SAFETY HELPERS
 // ============================================================
-
-
 function stripInternalLeakage(value) {
     let text = String(value || '');
+    
+    // Hapus pola meta-response yang sering muncul ketika model
+// mencoba menjelaskan instruksi internalnya sendiri.
+text = text.replace(
+    /^\s*(?:\d+\.\s*)?(?:identify the character|identify the series|provide context|tone|buttons|constraint check|response strategy|instruction check|system check)\s*:.*$/gim,
+    ''
+);
 
     // Hapus blok thought yang punya penutup.
     text = text.replace(/\[(?:THINK|THOUGHT|REASONING|ANALYSIS)\][\s\S]*?\[\/(?:THINK|THOUGHT|REASONING|ANALYSIS)\]/gi, '');
