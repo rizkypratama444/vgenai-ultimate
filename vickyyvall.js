@@ -34,7 +34,7 @@ try {
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'PASTE_BOT_TOKEN_DI_SINI';
 const PORT = process.env.PORT || 8080;
 const MAX_HISTORY = 15;
-const MAX_TEXT_FILE = 5000;
+const MAX_TEXT_FILE = 12000;
 
 if (TELEGRAM_BOT_TOKEN === 'PASTE_BOT_TOKEN_DI_SINI') {
     console.error('❌ TELEGRAM_BOT_TOKEN belum diisi. Set environment variable TELEGRAM_BOT_TOKEN.');
@@ -888,38 +888,40 @@ function consumeAiLimit(msg) {
 }
 
 function buildLimitExpiredMessage(info) {
+    const isVip = info?.status === 'VIP';
+    const limitText = Number(info?.total || 0);
+
+    if (isVip) {
+        return {
+            text:
+                `<blockquote>` +
+                `<b>🏷️ BLACKTICK AI NOTICE</b>\n\n` +
+                `<b>🚫 LIMIT VIP HABIS</b>\n\n` +
+                `Sisa limit AI VIP lu sekarang <b>0</b> dari ${limitText} chat hari ini.\n\n` +
+                `Tenang, limit harian otomatis direset setiap <b>00.00 WIB (12 malam)</b>.\n` +
+                `Setelah reset, akses VIP lu balik lagi sesuai paket.` +
+                `</blockquote>`,
+            keyboard: buildMembershipKeyboard()
+        };
+    }
+
     return {
         text:
             `<blockquote>` +
+            `<b>🏷️ BLACKTICK AI NOTICE</b>\n\n` +
             `<b>🚫 AI LIMIT HABIS</b>\n\n` +
-
-            `Limit AI akun lu sudah mencapai batas.\n\n` +
-
-            `👤 Status : <b>${info.status === 'VIP' ? '🏆 VIP' : '👤 NON-VIP'}</b>\n` +
-            `📊 Limit  : <b>${info.total}</b>\n` +
-            `📉 Sisa   : <b>0</b>\n\n` +
-
-            `💎 Mau lanjut ngobrol lebih banyak?\n` +
-            `Upgrade ke VIP dan dapat:\n` +
-            `├ 50 Limit utama\n` +
-            `├ +25 Bonus Limit\n` +
-            `└ Total <b>75 AI Limit</b>\n\n` +
-
-            `<s>Rp3̶9̶.̶9̶0̶0̶</s> → <b>Rp25.900</b>` +
+            `Limit AI NON-VIP lu sudah mencapai batas <b>${limitText}</b> chat hari ini.\n\n` +
+            `Limit otomatis direset setiap <b>00.00 WIB (12 malam)</b>.\n` +
+            `Kalau mau akses lebih banyak, upgrade ke <b>VIP</b> dengan total <b>75 chat AI / hari</b>.\n\n` +
+            `<s>Rp39.900</s> → <b>Rp25.900</b>` +
             `</blockquote>`,
-
         keyboard: [
             [
-                {
-                    text: '💎 Upgrade VIP',
-                    url: 'https://t.me/vickyyvall'
-                }
+                { text: '💎 Keanggotaan / Upgrade VIP', callback_data: 'ui|vip' }
             ],
             [
-                {
-                    text: '🛒 Order AM Prem',
-                    callback_data: 'order_am_prem'
-                }
+                { text: '📱 Telegram', url: TELEGRAM_OWNER_URL },
+                { text: '💬 WhatsApp', url: WHATSAPP_OWNER_URL }
             ]
         ]
     };
@@ -1023,7 +1025,11 @@ async function buildMediaPrompt(msg, basePrompt) {
             media.mimeType.includes('text') ||
             media.mimeType.includes('json') ||
             media.mimeType.includes('javascript') ||
-            /\.(js|json|txt|csv|html|css|py|md)$/i.test(lowerName);
+            media.mimeType.includes('xml') ||
+            media.mimeType.includes('yaml') ||
+            media.mimeType.includes('x-yaml') ||
+            /\.(html?|css|scss|sass|less|js|jsx|mjs|cjs|ts|tsx|json|jsonc|xml|svg|php|py|pyw|java|kt|kts|c|h|cc|cpp|cxx|hpp|cs|go|rs|swift|dart|rb|pl|pm|lua|r|sql|sh|bash|zsh|fish|ps1|bat|cmd|yaml|yml|toml|ini|conf|config|env|md|markdown|txt|csv|tsv|graphql|gql|proto|regex|dockerfile|makefile|mk|cmake|gitignore|gitattributes|editorconfig|prettierrc|eslintrc|lock)$/i.test(lowerName) ||
+            /^(readme(?:\..*)?|prompt(?:\..*)?|dockerfile|makefile|gemfile|rakefile|procfile|license|\.env(?:\..*)?)$/i.test(lowerName);
 
         // File teks yang bisa langsung dibaca AI
         if (readable) {
@@ -1170,18 +1176,150 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
     throw new Error('Waduh, semua API Key dan model lagi ngadet parah 😭 coba hitungan menit lagi yaa!');
 }
 
+
+// ============================================================
+// 🧠 BLACKTICK / BUSINESS / LIMIT SAFETY HELPERS
+// ============================================================
+
+
+function stripInternalLeakage(value) {
+    let text = String(value || '');
+
+    // Hapus blok thought yang punya penutup.
+    text = text.replace(/\[(?:THINK|THOUGHT|REASONING|ANALYSIS)\][\s\S]*?\[\/(?:THINK|THOUGHT|REASONING|ANALYSIS)\]/gi, '');
+
+    // Hapus tag internal satu baris.
+    text = text.replace(/^\s*\[(?:INFO SISTEM|INTERNAL|HIDDEN|SYSTEM|DEVELOPER)\].*$/gim, '');
+
+    // Jika model menulis reasoning tanpa tag penutup, buang baris-baris meta.
+    const metaLine =
+        /^(?:the user is\b|this is\b|i should\b|i need to\b|i need\b|we need to\b|response strategy:|suggested response:|analysis:|reasoning:|chain[- ]of[- ]thought:|let me think\b|i will respond\b|i'll respond\b|instructions?:|pronouns?:|reinforce:|image:|thought:)/i;
+
+    const lines = text.split('\n');
+    const cleaned = [];
+    let skippingThought = false;
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        if (/^\[(?:THINK|THOUGHT|REASONING|ANALYSIS)\]\s*$/i.test(trimmed)) {
+            skippingThought = true;
+            continue;
+        }
+
+        if (skippingThought) {
+            // Heuristik pemulihan: ketika model mulai mengeluarkan jawaban user-facing,
+            // kembali ke mode normal. Jangan membuang jawaban yang valid.
+            if (
+                /^(?:wkwk|awokawok|anjir|anjg|jir|cuy|bray|iya|iyaa|nah|oke|okeey|ya|jadi|sip|bisa|tentu|tentunya|berdasarkan|untuk|kalau|kalau mau|here's|sure|yes|no)\b/i.test(trimmed)
+                && !metaLine.test(trimmed)
+            ) {
+                skippingThought = false;
+            } else if (metaLine.test(trimmed) || !trimmed) {
+                continue;
+            } else {
+                // Baris biasa setelah thought tanpa marker jelas dianggap sebagai jawaban.
+                skippingThought = false;
+            }
+        }
+
+        if (!metaLine.test(trimmed)) cleaned.push(line);
+    }
+
+    text = cleaned.join('\n');
+
+    // Bersihkan marker thought yang tersisa di tengah teks.
+    text = text.replace(/\[(?:THINK|THOUGHT|REASONING|ANALYSIS)\]\s*/gi, '');
+    text = text.replace(/\[\/(?:THINK|THOUGHT|REASONING|ANALYSIS)\]\s*/gi, '');
+
+    return text.trim();
+}
+
+const TELEGRAM_OWNER_URL = 'https://t.me/vickyyvall';
+const WHATSAPP_OWNER_URL = 'https://wa.me/62895410975149';
+const AM_PREM_IMAGE_URL = 'https://ibb.co.com/Tx5ND8rF';
+
+function isAlightMotionTopic(text) {
+    const value = String(text || '').toLowerCase();
+    return /\b(?:alight\s*motion|am\s*prem(?:ium)?|am\s*premium|am\s*prem|alightmotion)\b|premium\s+1\s+tahun|prem\s+1\s+tahun/.test(value);
+}
+
+function buildAMPremButtons() {
+    return [
+        [
+            { text: '🛒 Order AM Prem', url: TELEGRAM_OWNER_URL },
+            { text: '💬 WhatsApp', url: WHATSAPP_OWNER_URL }
+        ]
+    ];
+}
+
+function buildLimitWarning(info) {
+    if (!info || info.unlimited) return '';
+
+    if (info.status === 'NONVIP' && (Number(info.remaining) === 8 || Number(info.remaining) === 7)) {
+        return (
+            `\n\n<blockquote>` +
+            `<b>🏷️ BLACKTICK AI NOTICE</b>\n` +
+            `⚠️ limit AI lu mulai menipis: <b>${info.remaining} chat</b> tersisa dari ${info.total} hari ini.\n\n` +
+            `limit chat AI dihitung hanya saat lu ngobrol dengan AI dan otomatis direset setiap <b>00.00 WIB (12 malam)</b>.\n` +
+            `kalau mau lanjut lebih banyak tanpa cepat mentok, lu bisa upgrade ke <b>VIP</b>.\n\n` +
+            `💎 VIP: <b>75 chat AI / hari</b>\n` +
+            `📱 upgrade: Telegram / WhatsApp di bawah.` +
+            `</blockquote>`
+        );
+    }
+
+    if (info.status === 'VIP' && Number(info.remaining) === 70) {
+        return (
+            `\n\n<blockquote>` +
+            `<b>🏷️ BLACKTICK AI NOTICE</b>\n` +
+            `ℹ️ sisa limit VIP lu sekarang <b>70 chat</b>.\n\n` +
+            `limit VIP akan otomatis direset setiap <b>00.00 WIB (12 malam)</b>.\n` +
+            `santai, akses VIP masih aktif dan limit akan kembali penuh saat reset.` +
+            `</blockquote>`
+        );
+    }
+
+    return '';
+}
+
+function buildMembershipKeyboard() {
+    return [
+        [
+            { text: '📱 Telegram vickyyvall', url: TELEGRAM_OWNER_URL }
+        ],
+        [
+            { text: '💬 WhatsApp vickyyvall', url: WHATSAPP_OWNER_URL }
+        ]
+    ];
+}
+
+function buildMembershipText() {
+    return (
+        `<b>💎 KEANGGOTAAN vickyyvall - AI.</b>\n\n` +
+        `<blockquote>` +
+        `<b>🏆 VIP AI</b>\n\n` +
+        `💬 Total: <b>75 chat AI / hari</b>\n` +
+        `├ Limit utama: 50\n` +
+        `├ Bonus: +25\n` +
+        `└ Reset: <b>00.00 WIB (12 malam)</b>\n\n` +
+        `💸 Harga normal: <s>Rp39.900</s>\n` +
+        `🔥 Harga VIP: <b>Rp25.900</b>\n\n` +
+        `VIP cocok buat lu yang sering ngobrol, coding, belajar, cari ide, atau butuh AI lebih sering tanpa cepat mentok limit NON-VIP.` +
+        `</blockquote>\n\n` +
+        `<b>📱 Mau upgrade?</b>\n` +
+        `Klik Telegram atau WhatsApp di bawah buat tanya dan order.`
+    );
+}
+
 // ============================================================
 // CORE MESSAGE & CALLBACK PARSER
 // ============================================================
-async function processAIResponse(chatId, rawResponse, replyToId) {
+async function processAIResponse(chatId, rawResponse, replyToId, sourcePrompt = '', limitInfo = null) {
     let text = String(rawResponse || '').trim();
 
-    // HAPUS SPAM INFO SISTEM & BOCORAN [THOUGHT] AI YANG NGELANTUR
-    text = text.replace(/\[INFO SISTEM:.*?\]/gi, '').trim();
-    
-    // Pembersih brutal buat ngehapus logika AI sebelum dia beneran ngebales
-    text = text.replace(/\[THOUGHT\][\s\S]*?(?=(?:<<<|\n\n|Nah|Gas|Yaudah|Wkwk|Jadi|Oke|Iya|Gw|Lu))/gi, '').trim();
-    text = text.replace(/^(Reinforce|Instructions|Image|Pronouns|Thought):.*$/gim, '').trim();
+    // HAPUS INFO SISTEM / INTERNAL THINKING / META-REASONING YANG KEBOCOR.
+    text = stripInternalLeakage(text);
 
     // 1. EXTRACT IMAGE (NEW SAFE SYNTAX <<<IMAGE: ...>>>)
 
@@ -1248,14 +1386,18 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
 // FIX BUTTON AM PREM + AI-GENERATED BUTTONS
 // ============================================================
 
-// AM PREM tetap punya tombol khusus karena ini memang fitur bisnis.
-if (imageToSent === 'https://ibb.co.com/Tx5ND8rF' && inline_keyboard.length === 0) {
-    inline_keyboard = [[
-        {
-            text: "🛒 Chat vickyyvall Now!",
-            url: "https://t.me/vickyyvall"
-        }
-    ]];
+// AM PREM hanya dipicu jika pesan user memang membahas Alight Motion.
+// Backend memaksa gambar + tombol agar AI tidak bisa lupa.
+if (isAlightMotionTopic(sourcePrompt)) {
+    imageToSent = AM_PREM_IMAGE_URL;
+    inline_keyboard = buildAMPremButtons();
+}
+
+// Notifikasi limit dibuat backend agar konsisten dan tidak bergantung
+// pada apakah model AI mengingat instruksi warning atau tidak.
+const limitWarning = buildLimitWarning(limitInfo);
+if (limitWarning) {
+    text += limitWarning;
 }
 
 // JANGAN paksa tombol rekomendasi generik.
@@ -1319,38 +1461,34 @@ bot.on('callback_query', async (query) => {
 // ============================================================
 
 if (data === 'order_am_prem') {
-
     await bot.answerCallbackQuery(query.id);
 
-    await sendReply(
-        bot,
-        chatId,
-        `<blockquote>` +
-        `<b>🛒 ORDER ALIGHT MOTION PREMIUM</b>\n\n` +
-        `Lu tertarik order AM Prem 1 Tahun?\n\n` +
-        `💎 Harga: <b>Rp5.000</b>\n` +
-        `⏱️ Durasi: <b>1 Tahun</b>\n\n` +
-        `Mau lanjut order sekarang?` +
-        `</blockquote>`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        {
-                            text: '✅ Ya, mau order',
-                            url: 'https://t.me/vickyyvall'
-                        }
-                    ],
-                    [
-                        {
-                            text: '⏳ Lain kali',
-                            callback_data: 'order_am_later'
-                        }
-                    ]
-                ]
+    try {
+        await bot.sendPhoto(chatId, AM_PREM_IMAGE_URL, {
+            caption:
+                `<b>🛒 ALIGHT MOTION PREMIUM 1 TAHUN</b>\n\n` +
+                `💎 Durasi: <b>1 Tahun</b>\n` +
+                `🛡️ Garansi: <b>1 Bulan</b>\n` +
+                `✨ Kualitas: premium dan siap dipakai.\n\n` +
+                `Produk AM Prem vickyyvall sudah banyak dibeli lewat TikTok dan platform lainnya.\n` +
+                `Kalau mau order, langsung chat vickyyvall.`,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: buildAMPremButtons() }
+        });
+    } catch (e) {
+        await sendReply(
+            bot,
+            chatId,
+            `<b>🛒 ALIGHT MOTION PREMIUM 1 TAHUN</b>\n\n` +
+            `💎 Durasi: <b>1 Tahun</b>\n` +
+            `🛡️ Garansi: <b>1 Bulan</b>\n` +
+            `✨ Kualitas premium.\n\n` +
+            `AM Prem vickyyvall sudah banyak dibeli lewat TikTok dan platform lainnya.`,
+            {
+                reply_markup: { inline_keyboard: buildAMPremButtons() }
             }
-        }
-    );
+        );
+    }
 
     return;
 }
@@ -1431,45 +1569,16 @@ if (data === 'ui|limit') {
 
 
 if (data === 'ui|vip') {
-
     await bot.answerCallbackQuery(query.id);
 
     await sendReply(
         bot,
         chatId,
-        `<b>💎 KEANGGOTAAN vickyyvall - AI.</b>\n\n` +
-        `<blockquote>` +
-        `<b>🏆 VIP AI</b>\n\n` +
-        `💎 Harga VIP : <b>Rp25.900</b>\n` +
-        `🗨️ Limit utama : <b>50</b>\n` +
-        `🎁 Bonus : <b>+25</b>\n` +
-        `💬 Total : <b>75 chat AI / hari</b>\n` +
-        `🔄 Reset : <b>00.00 WIB</b>\n\n` +
-        `💸 Harga normal : <s>Rp3̶9̶.̶9̶0̶0̶</s>\n` +
-        `🔥 Harga sekarang : <b>Rp25.900</b>\n\n` +
-        `Dengan VIP, lu dapet akses AI dengan total <b>75 chat per hari</b>. ` +
-        `Limit akan direset kembali setiap <b>00.00 WIB</b>.` +
-        `</blockquote>\n\n` +
-        `<b>📱 Mau upgrade?</b>\n` +
-        `Pilih kontak di bawah buat order atau tanya langsung.`,
-
+        buildMembershipText(),
         {
             reply_to_message_id: query.message?.message_id,
             reply_markup: {
-                inline_keyboard: [
-                    [
-                        {
-                            text: '📱 Telegram vickyyvall',
-                            url: 'https://t.me/vickyyvall'
-                        }
-                    ],
-                    [
-                        {
-                            text: '💬 WhatsApp vickyyvall',
-                            url: 'https://wa.me/62895410975149'
-                        }
-                    ]
-                ]
+                inline_keyboard: buildMembershipKeyboard()
             }
         }
     );
@@ -1556,7 +1665,7 @@ try {
             stopRecordingPresence();
         }
 
-        const finalSavedText = await processAIResponse(chatId, response, query.message?.message_id);
+        const finalSavedText = await processAIResponse(chatId, response, query.message?.message_id, finalPrompt, limitCheck.info);
         
         pushHistory(chatId, 'user', finalPrompt);
         pushHistory(chatId, 'assistant', finalSavedText);
@@ -1618,8 +1727,8 @@ try {
     `Total limit hariannya: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.total}. ` +
     `Sisa limit setelah pesan ini: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining}. ` +
     `Limit hanya berlaku untuk chat AI dan reset otomatis setiap 00.00 WIB Asia/Jakarta. ` +
-    `${limitCheck.info.status === 'NONVIP' && (limitCheck.info.remaining === 8 || limitCheck.info.remaining === 7) ? 'WAJIB beri peringatan limit yang mulai menipis secara natural dan promosi upgrade VIP.' : ''} ` +
-    `${limitCheck.info.status === 'VIP' && limitCheck.info.remaining === 70 ? 'WAJIB beri peringatan bahwa sisa limit VIP sudah 70 dan limit reset setiap 00.00 WIB.' : ''}]`;
+    `${limitCheck.info.status === 'NONVIP' && (limitCheck.info.remaining === 8 || limitCheck.info.remaining === 7) ? 'BACKEND AKAN MENAMBAHKAN NOTIFIKASI LIMIT; JANGAN MENULIS PERINGATAN LIMIT LAGI AGAR TIDAK DUPLIKAT.' : ''} ` +
+    `${limitCheck.info.status === 'VIP' && limitCheck.info.remaining === 70 ? 'BACKEND AKAN MENAMBAHKAN NOTIFIKASI VIP 70; JANGAN MENULIS PERINGATAN LIMIT LAGI AGAR TIDAK DUPLIKAT.' : ''}]`;
             // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
             const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
@@ -1631,7 +1740,7 @@ try {
 
         if (aiMutedChats.has(chatId)) return;
 
-        const finalSavedText = await processAIResponse(chatId, response, msg.message_id);
+        const finalSavedText = await processAIResponse(chatId, response, msg.message_id, text || '', limitCheck.info);
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', finalSavedText);
@@ -1658,7 +1767,7 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/', (req, res) => {
-    res.json({ ok: true, service: 'vìckyyvall - AI Telegram Bot', provider: activeProvider, model: activeModel, timeWIB: nowWIB() });
+    res.json({ ok: true, service: 'vìckyyvall - AI Telegram Bot', provider: activeProvider, model: ROTATION_MODELS[currentModelIndex], timeWIB: nowWIB() });
 });
 
 app.post('/deploy-key', (req, res) => {
