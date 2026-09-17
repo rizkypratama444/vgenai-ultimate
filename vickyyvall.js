@@ -1108,8 +1108,8 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
                         
                         // 2. Random delay 1-3 detik tanpa kutip
                         await delay(1000);
-                        const randomWait = Math.floor(Math.random() * 2000) + 1000;
-                        await bot.sendMessage(chatId, "Server penuh, tunggu sebentar...");
+                        const randomWait = Math.floor(Math.random() * 5000) + 5000;
+                        await bot.sendMessage(chatId, "Server sedang ramai, tunggu sebentar...");
                         await delay(randomWait);
 
                         // 3. Krusial terakhir tanpa kutip
@@ -1410,26 +1410,45 @@ if (data === 'ui|vip') {
     await sendReply(
         bot,
         chatId,
-        `<b>🏆 VIP vickyyvall - AI.</b>\n\n` +
-        `╭━━━━━━━━━━━━━━━━━━╮\n` +
-        `┃ 💎 Harga VIP : <b>Rp25.900</b>\n` +
-        `┃ 🗨️ Limit utama : <b>50</b>\n` +
-        `┃ 🎁 Bonus : <b>+25</b>\n` +
-        `┃ 💬 Total : <b>75 chat AI</b>\n` +
-        `╰━━━━━━━━━━━━━━━━━━╯\n\n` +
-        `💸 Harga normal: <s>Rp39.900</s>\n` +
-        `🔥 Harga sekarang: <b>Rp25.900</b>\n\n` +
-        `VIP memberikan tambahan akses AI.` +
-        `\n\n` +
-        `🛒 Kalau mau upgrade, hubungi <b>@vickyyvall</b>.`,
+        `<b>💎 KEANGGOTAAN vickyyvall - AI.</b>\n\n` +
+        `<blockquote>` +
+        `<b>🏆 VIP AI</b>\n\n` +
+        `💎 Harga VIP : <b>Rp25.900</b>\n` +
+        `🗨️ Limit utama : <b>50</b>\n` +
+        `🎁 Bonus : <b>+25</b>\n` +
+        `💬 Total : <b>75 chat AI / hari</b>\n` +
+        `🔄 Reset : <b>00.00 WIB</b>\n\n` +
+        `💸 Harga normal : <s>Rp3̶9̶.̶9̶0̶0̶</s>\n` +
+        `🔥 Harga sekarang : <b>Rp25.900</b>\n\n` +
+        `Dengan VIP, lu dapet akses AI dengan total <b>75 chat per hari</b>. ` +
+        `Limit akan direset kembali setiap <b>00.00 WIB</b>.` +
+        `</blockquote>\n\n` +
+        `<b>📱 Mau upgrade?</b>\n` +
+        `Pilih kontak di bawah buat order atau tanya langsung.`,
+
         {
-            reply_to_message_id: query.message?.message_id
+            reply_to_message_id: query.message?.message_id,
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '📱 Telegram vickyyvall',
+                            url: 'https://t.me/vickyyvall'
+                        }
+                    ],
+                    [
+                        {
+                            text: '💬 WhatsApp vickyyvall',
+                            url: 'https://wa.me/62895410975149'
+                        }
+                    ]
+                ]
+            }
         }
     );
 
     return;
 }
-
 
 // ============================================================
 // AI CALLBACK
@@ -1567,7 +1586,13 @@ try {
         let response;
                 try {
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const userStatusInstruction = `[INFO SISTEM: User ini statusnya ${limitCheck.info.status}. Sisa limit harian dia: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining} chat.]`;
+            const userStatusInstruction =
+    `[INFO SISTEM: User ini statusnya ${limitCheck.info.status}. ` +
+    `Total limit hariannya: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.total}. ` +
+    `Sisa limit setelah pesan ini: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining}. ` +
+    `Limit hanya berlaku untuk chat AI dan reset otomatis setiap 00.00 WIB Asia/Jakarta. ` +
+    `${limitCheck.info.status === 'NONVIP' && limitCheck.info.remaining <= 8 ? 'WAJIB beri peringatan limit yang mulai menipis secara natural dan promosi upgrade VIP.' : ''} ` +
+    `${limitCheck.info.status === 'VIP' && limitCheck.info.remaining === 70 ? 'WAJIB beri peringatan bahwa sisa limit VIP sudah 70 dan limit reset setiap 00.00 WIB.' : ''}]`;
             // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
             const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
