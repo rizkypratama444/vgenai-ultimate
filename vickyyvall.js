@@ -420,7 +420,7 @@ bot.onText(/^\/(start|help)(?:@\w+)?$/i, async (msg) => {
         `└ Total        : <b>75 AI Limit</b>` +
         `</blockquote>\n\n` +
 
-        `<b>VGen AI Multifungsi</b> 🏴‍☠️\n\n` +
+        `<b>vìckyyvall - AI Multifungsi</b> 🏴‍☠️\n\n` +
         `Teman AI yang siap nemenin lu kapan aja. 😎\n\n` +
         `Mau ngobrol, cari ide, belajar, coding, bahas bola, ` +
         `atau sekadar random juga gw gas😹🔥\n\n` +
@@ -1631,7 +1631,7 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/', (req, res) => {
-    res.json({ ok: true, service: 'VGen AI Telegram Bot', provider: activeProvider, model: activeModel, timeWIB: nowWIB() });
+    res.json({ ok: true, service: 'vìckyyvall - AI Telegram Bot', provider: activeProvider, model: activeModel, timeWIB: nowWIB() });
 });
 
 app.post('/deploy-key', (req, res) => {
