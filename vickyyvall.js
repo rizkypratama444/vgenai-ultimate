@@ -405,7 +405,7 @@ function startRecordingPresence(chatId) {
     const sendPresence = async () => {
         if (stopped) return;
         try {
-            await bot.sendChatAction(chatId, 'record_voice');
+            await bot.sendChatAction(chatId, 'typing'); 
         } catch (e) {}
     };
     sendPresence();
@@ -1174,8 +1174,35 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
                 
                 // CUMA SPAM DI PERCOBAAN PERTAMA BIAR LAWAN BICARA GA KABUR
                 if (attempts === 1 && replyToId) {
-                console.log('[AI ROTATION] Model limit, pindah ke model berikutnya...');
-           }
+                    try {
+                        // 1. Loading detik pertama
+                        const loadMsg = await bot.sendMessage(chatId, "⏳Loading", { reply_to_message_id: replyToId });
+                        await delay(1000);
+
+                        // 2. Animasi titik bertahap tanpa bikin chat baru (Edit Bubble)
+                        let baseText = "Server penuh, harap tunggu sebentar";
+                        const frames = [".", "..", "...", "> .", "> ..", "> ...", ">> .", ">> ..", ">> ..."];
+                        const totalAnimationTime = Math.floor(Math.random() * 4000) + 5000; // 5-9 detik
+                        const interval = 600; 
+                        const steps = Math.floor(totalAnimationTime / interval);
+
+                        for (let i = 0; i < steps; i++) {
+                            const frame = frames[i % frames.length];
+                            await bot.editMessageText(baseText + frame, { 
+                                chat_id: chatId, 
+                                message_id: loadMsg.message_id 
+                            }).catch(() => {});
+                            await delay(interval);
+                        }
+
+                        // 3. Pesan final berevolusi
+                        await bot.editMessageText("AI Berevolusi kembali ✅", { 
+                            chat_id: chatId, 
+                            message_id: loadMsg.message_id 
+                        }).catch(() => {});
+                        await delay(1000);
+                    } catch (e) {}
+                }
 
                 // ROTASI SIKLUS BERULANG!
                 console.log(`[LIMIT] ${currentModel} di email ${activeKeys[currentKeyIndex].email} HABIS. Berevolusi!`);
@@ -1714,23 +1741,9 @@ try {
 aiBusyChats.add(chatId);
 
 try {
-    // Pesan sementara yang akan dijadikan target QUOTE AI.
-    const selectedMessage = await bot.sendMessage(
-        chatId,
-        action
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;'),
-        {
-            parse_mode: 'HTML',
-            reply_to_message_id: query.message?.message_id
-        }
-    );
-
     // ============================================================
-    // 🔐 LIMIT CHECK UNTUK BUTTON AI
+    // 🔐 LIMIT CHECK UNTUK BUTTON AI (CEK DULU SEBELUM BIKIN PESAN)
     // ============================================================
-
     const callbackUser = query.from || {};
     const callbackMsg = {
         from: callbackUser,
@@ -1759,14 +1772,30 @@ try {
                 }
             }
         );
-
-        try {
-            await bot.deleteMessage(chatId, selectedMessage.message_id);
-        } catch (e) {}
-
         return;
     }
 
+    // ============================================================
+    // 👻 EFEK "HANGUS" BAWAAN TELEGRAM TAPI ANTI-JUMPSCARE
+    // ============================================================
+    
+    // 1. Bikin pesan pancingan
+    const selectedMessage = await bot.sendMessage(
+        chatId,
+        action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+        {
+            parse_mode: 'HTML',
+            reply_to_message_id: query.message?.message_id
+        }
+    );
+
+    // 2. LANGSUNG HAPUS INSTAN SEBELUM AI MIKIR!
+    // Ini rahasianya biar UI Telegram nggak lompat (jumpscare) pas balasan datang
+    try {
+        await bot.deleteMessage(chatId, selectedMessage.message_id);
+    } catch (e) {}
+
+    // 3. Mulai indikator Ngetik...
     const stopRecordingPresence = startRecordingPresence(chatId);
     let response;
 
@@ -1782,6 +1811,7 @@ try {
         stopRecordingPresence();
     }
 
+        // 4. Kirim balasan AI (Nge-quote pesan yang udah hangus, teks lu tetep muncul!)
     const finalSavedText = await processAIResponse(
         chatId,
         response,
@@ -1791,29 +1821,20 @@ try {
         {
             reply_parameters: {
                 message_id: selectedMessage.message_id,
-                quote: action
+                quote: action // Nge-lock teks button pilihan lu
             }
         }
     );
-
-    // Hapus pesan pilihan setelah AI membalas.
-    try {
-        await bot.deleteMessage(
-            chatId,
-            selectedMessage.message_id
-        );
-    } catch (e) {
-        console.error(
-            '[DELETE SELECTED MESSAGE ERROR]',
-            e.message
-        );
-    }
+   
 
     pushHistory(chatId, 'user', finalPrompt);
     pushHistory(chatId, 'assistant', finalSavedText);
 
-} catch (error) {
+    // EFEK "LINGER TYPING" BIAR KEREN & NATURAL! 🔥
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
 
+
+} catch (error) {
     console.error('[AI BUTTON ERROR]', error);
 
     try {
@@ -1922,6 +1943,10 @@ try {
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', finalSavedText);
+
+        // EFEK "LINGER TYPING" BIAR KEREN & NATURAL! 🔥
+        bot.sendChatAction(chatId, 'typing').catch(() => {});
+
        aiBusyChats.delete(chatId);
 
     } catch (error) {
