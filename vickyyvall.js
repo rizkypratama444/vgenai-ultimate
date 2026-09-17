@@ -1138,10 +1138,7 @@ async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, curr
         system_instruction: {
             parts: [{ text: systemInstructionText }]
         },
-        contents,
-        generationConfig: {
-            maxOutputTokens: 1000
-        }
+        contents
     })
 });
 
