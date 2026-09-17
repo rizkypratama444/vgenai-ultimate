@@ -1172,33 +1172,38 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
             if (error.message === 'LIMIT_REACHED') {
                 attempts++;
                 
-                // CUMA SPAM DI PERCOBAAN PERTAMA BIAR LAWAN BICARA GA KABUR
+               // CUMA SPAM DI PERCOBAAN PERTAMA BIAR LAWAN BICARA GA KABUR
                 if (attempts === 1 && replyToId) {
                     try {
-                        // 1. Loading detik pertama
-                        const loadMsg = await bot.sendMessage(chatId, "⏳Loading", { reply_to_message_id: replyToId });
-                        await delay(1000);
+                        // 1. BUBBLE PERTAMA (Loading, nge-quote pesan user)
+                        const loadMsg = await bot.sendMessage(chatId, "⏳ Loading", { reply_to_message_id: replyToId });
+                        
+                        // DELAY RANDOM 2-3 DETIK BUAT LOADING PERTAMA! 🔥
+                        const loadingDelay = Math.floor(Math.random() * 1000) + 2000; // 2000ms - 3000ms
+                        await delay(loadingDelay);
 
-                        // 2. Animasi titik bertahap tanpa bikin chat baru (Edit Bubble)
-                        let baseText = "Server penuh, harap tunggu sebentar";
-                        const frames = [".", "..", "...", "> .", "> ..", "> ...", ">> .", ">> ..", ">> ..."];
-                        const totalAnimationTime = Math.floor(Math.random() * 4000) + 5000; // 5-9 detik
-                        const interval = 600; 
+                        // 2. BUBBLE KEDUA (Server Penuh + Animasi Titik)
+                        const animMsg = await bot.sendMessage(chatId, "Server penuh, Tunggu sebentar.");
+                        
+                        let baseText = "Server penuh, Tunggu sebentar";
+                        const frames = [".", "..", "..."];
+                        const totalAnimationTime = Math.floor(Math.random() * 4000) + 5000; // 5-9 detik random
+                        const interval = 400; // Animasi titik lebih cepat dan smooth!
                         const steps = Math.floor(totalAnimationTime / interval);
 
                         for (let i = 0; i < steps; i++) {
                             const frame = frames[i % frames.length];
                             await bot.editMessageText(baseText + frame, { 
                                 chat_id: chatId, 
-                                message_id: loadMsg.message_id 
+                                message_id: animMsg.message_id 
                             }).catch(() => {});
                             await delay(interval);
                         }
 
-                        // 3. Pesan final berevolusi
+                        // 3. Pesan final berevolusi (di bubble kedua)
                         await bot.editMessageText("AI Berevolusi kembali ✅", { 
                             chat_id: chatId, 
-                            message_id: loadMsg.message_id 
+                            message_id: animMsg.message_id 
                         }).catch(() => {});
                         await delay(1000);
                     } catch (e) {}
@@ -1775,11 +1780,11 @@ try {
         return;
     }
 
-    // ============================================================
-    // 👻 EFEK "HANGUS" BAWAAN TELEGRAM TAPI ANTI-JUMPSCARE
+        // ============================================================
+    // 👻 EFEK "HANGUS" BAWAAN TELEGRAM FIXED!
     // ============================================================
     
-    // 1. Bikin pesan pancingan
+    // 1. Bikin pesan pancingan (BIARIN MUNCUL DULU BIAR DAPET ANIMASI)
     const selectedMessage = await bot.sendMessage(
         chatId,
         action.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -1789,13 +1794,7 @@ try {
         }
     );
 
-    // 2. LANGSUNG HAPUS INSTAN SEBELUM AI MIKIR!
-    // Ini rahasianya biar UI Telegram nggak lompat (jumpscare) pas balasan datang
-    try {
-        await bot.deleteMessage(chatId, selectedMessage.message_id);
-    } catch (e) {}
-
-    // 3. Mulai indikator Ngetik...
+    // 2. Mulai indikator Ngetik...
     const stopRecordingPresence = startRecordingPresence(chatId);
     let response;
 
@@ -1811,7 +1810,7 @@ try {
         stopRecordingPresence();
     }
 
-        // 4. Kirim balasan AI (Nge-quote pesan yang udah hangus, teks lu tetep muncul!)
+    // 3. Kirim balasan AI (Nge-quote pesan pilihan lu)
     const finalSavedText = await processAIResponse(
         chatId,
         response,
@@ -1825,14 +1824,19 @@ try {
             }
         }
     );
-   
 
+    // 4. HAPUS PESAN PANCINGAN SEKARANG! (Biar dapet efek debu hangus dari Telegram!)
+    try {
+        await bot.deleteMessage(chatId, selectedMessage.message_id);
+    } catch (e) {}
+   
     pushHistory(chatId, 'user', finalPrompt);
     pushHistory(chatId, 'assistant', finalSavedText);
 
-    // EFEK "LINGER TYPING" BIAR KEREN & NATURAL! 🔥
+    // EFEK "LINGER TYPING" DIPANJANGIN! 🔥
     bot.sendChatAction(chatId, 'typing').catch(() => {});
-
+    // Tembak lagi 2 detik kemudian biar ngetiknya mutlak stay 3-5 detik di atas layar!
+    setTimeout(() => bot.sendChatAction(chatId, 'typing').catch(() => {}), 2000);
 
 } catch (error) {
     console.error('[AI BUTTON ERROR]', error);
@@ -1939,13 +1943,15 @@ try {
     return;
 }
 
-        const finalSavedText = await processAIResponse(chatId, response, msg.message_id, text || '', limitCheck.info);
+         const finalSavedText = await processAIResponse(chatId, response, msg.message_id, text || '', limitCheck.info);
 
         pushHistory(chatId, 'user', text || '[Media]');
         pushHistory(chatId, 'assistant', finalSavedText);
 
-        // EFEK "LINGER TYPING" BIAR KEREN & NATURAL! 🔥
+        // EFEK "LINGER TYPING" DIPANJANGIN! 🔥
         bot.sendChatAction(chatId, 'typing').catch(() => {});
+        // Tembak lagi 2 detik kemudian biar ngetiknya mutlak stay 3-5 detik di atas layar!
+        setTimeout(() => bot.sendChatAction(chatId, 'typing').catch(() => {}), 2000);
 
        aiBusyChats.delete(chatId);
 
