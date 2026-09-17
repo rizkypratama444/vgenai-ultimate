@@ -1132,19 +1132,20 @@ async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, curr
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent?key=${encodeURIComponent(currentKey)}`;
     
     const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-    system_instruction: {
-        parts: [{ text: systemInstructionText }]
-    },
-    contents,
-    generationConfig: {
-        maxOutputTokens: 1000
-    }
-})
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        system_instruction: {
+            parts: [{ text: systemInstructionText }]
+        },
+        contents,
+        generationConfig: {
+            maxOutputTokens: 1000
+        }
+    })
+});
 
-    const data = await res.json();
+const data = await res.json();
     if (!res.ok || data.error) {
         const errMsg = data.error?.message || `Gemini HTTP ${res.status}`;
         // Deteksi Limit 429 atau kuota meluap
