@@ -1106,10 +1106,10 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
                         // 1. Kutip pesan lawan bicara mutlak
                         await bot.sendMessage(chatId, "⏳Loading", { reply_to_message_id: replyToId });
                         
-                        // 2. Random delay 5-9 detik tanpa kutip
+                        // 2. Random delay 1-3 detik tanpa kutip
                         await delay(1000);
-                        const randomWait = Math.floor(Math.random() * 4000) + 5000; // 5000ms - 9000ms
-                        await bot.sendMessage(chatId, "Server sedang ramai, tunggu sebentar...");
+                        const randomWait = Math.floor(Math.random() * 2000) + 1000;
+                        await bot.sendMessage(chatId, "Server penuh, tunggu sebentar...");
                         await delay(randomWait);
 
                         // 3. Krusial terakhir tanpa kutip
@@ -1150,8 +1150,7 @@ async function processAIResponse(chatId, rawResponse, replyToId) {
     let text = String(rawResponse || '').trim();
 
     // HAPUS SPAM INFO SISTEM & BOCORAN [THOUGHT] AI YANG NGELANTUR
-    text = text.replace(/\[(?:INFO )?SISTEM(?:.*?|)\]/gi, '').trim();
-    text = text.replace(/\[SISTEM SEDANG MEMPROSES.*?\]/gi, '').trim();
+    text = text.replace(/\[INFO SISTEM:.*?\]/gi, '').trim();
     
     // Pembersih brutal buat ngehapus logika AI sebelum dia beneran ngebales
     text = text.replace(/\[THOUGHT\][\s\S]*?(?=(?:<<<|\n\n|Nah|Gas|Yaudah|Wkwk|Jadi|Oke|Iya|Gw|Lu))/gi, '').trim();
@@ -1566,24 +1565,13 @@ try {
         const stopRecordingPresence = startRecordingPresence(chatId);
         const mediaResult = await buildMediaPrompt(msg, text);
         let response;
-                        try {
+                try {
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
-            const userStatusInstruction = `[INFO SISTEM: User ini statusnya ${limitCheck.info.status}. Sisa limit harian dia: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining} chat dari total ${limitCheck.info.total}.]`;
-            
-            // INJEKSI PERINGATAN LIMIT
-            let limitWarningInstruction = '';
-            if (!limitCheck.info.unlimited) {
-                if (limitCheck.info.status !== 'VIP' && limitCheck.info.used >= 7) {
-                    limitWarningInstruction = `\n[INFO SISTEM KRUSIAL: Limit harian user ini sisa ${limitCheck.info.remaining} lagi! WAJIB kasih peringatan natural di akhir balasan kalau limit mau habis, jelasin kalau limit direset tiap 00:00 WIB, dan suruh UPGRADE VIP buat dapetin 75 limit. Munculkan tombol Upgrade sesuai instruksi!]`;
-                } else if (limitCheck.info.status === 'VIP' && limitCheck.info.used >= 70) {
-                    limitWarningInstruction = `\n[INFO SISTEM KRUSIAL: Limit VIP user ini sisa ${limitCheck.info.remaining} lagi! Kasih peringatan natural di akhir balasan buat hemat limit karena bentar lagi habis, ingetin reset jam 00:00 WIB.]`;
-                }
-            }
-
+            const userStatusInstruction = `[INFO SISTEM: User ini statusnya ${limitCheck.info.status}. Sisa limit harian dia: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining} chat.]`;
             // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
             const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
-            const finalPrompt = `${currentTimeInstruction}\n${userStatusInstruction}${limitWarningInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
+            const finalPrompt = `${currentTimeInstruction}\n${userStatusInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia, msg.message_id);
         } finally {
             stopRecordingPresence();
@@ -1639,5 +1627,5 @@ app.post('/deploy-key', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ VGEN AI TELEGRAM ONLINE di port ${PORT}`);
+    console.log(`✅ vickyyvall - AI. TELEGRAM ONLINE di port ${PORT}`);
 });
