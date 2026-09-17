@@ -109,11 +109,17 @@ function isOwner(msgOrUser) {
     return username === OWNER_USERNAME;
 }
 
+function getDateWIB() {
+    return new Date().toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' });
+}
+
 function getUserRecord(msg) {
     const user = msg?.from || {};
     const userId = getUserKey(user.id);
 
     if (!userId) return null;
+
+    const todayWIB = getDateWIB();
 
     if (!db.users[userId]) {
         db.users[userId] = {
@@ -125,30 +131,32 @@ function getUserRecord(msg) {
             vip: isOwner(msg),
             aiLimit: isOwner(msg) ? null : NON_VIP_LIMIT,
             aiUsed: 0,
+            lastResetDate: todayWIB,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };
-
         saveDb();
     } else {
-        // Update data Telegram yang memang boleh berubah.
         const record = db.users[userId];
+
+        // 🔥 LOGIKA RESET HARIAN OTOMATIS JAM 00:00 WIB 🔥
+        if (record.lastResetDate !== todayWIB) {
+            record.aiUsed = 0;
+            record.lastResetDate = todayWIB;
+        }
 
         record.username = normalizeUsername(user.username);
         record.firstName = String(user.first_name || '');
         record.lastName = String(user.last_name || '');
         record.updatedAt = new Date().toISOString();
 
-        // Owner selalu mendapatkan akses Unlimited.
         if (isOwner(msg)) {
             record.status = 'OWNER';
             record.vip = true;
             record.aiLimit = null;
         }
-
         saveDb();
     }
-
     return db.users[userId];
 }
 
@@ -835,44 +843,22 @@ bot.onText(/^\.ceklimit(?:\s+(.+))?$/i, async (msg, match) => {
 
 function consumeAiLimit(msg) {
     const info = getUserLimitInfo(msg);
-
-    // OWNER = Unlimited
-    if (info.unlimited) {
-        return {
-            allowed: true,
-            info
-        };
-    }
-
-    // Limit habis
-    if (info.remaining <= 0) {
-        return {
-            allowed: false,
-            info
-        };
-    }
-
     const user = getUserRecord(msg);
 
-    if (!user) {
-        return {
-            allowed: false,
-            info
-        };
+    if (!user) return { allowed: false, info };
+
+    // 🔥 LIMIT HABIS DITOLAK MENTAH-MENTAH 🔥
+    if (!info.unlimited && info.remaining <= 0) {
+        return { allowed: false, info };
     }
 
-    // HANYA di sini AI usage bertambah.
+    // 🔥 SEMUA PENGGUNAAN (TERMASUK OWNER) DICATAT! 🔥
     user.aiUsed = Number(user.aiUsed || 0) + 1;
     user.updatedAt = new Date().toISOString();
-
     saveDb();
 
-    return {
-        allowed: true,
-        info: getUserLimitInfo(msg)
-    };
+    return { allowed: true, info: getUserLimitInfo(msg) };
 }
-
 
 function buildLimitExpiredMessage(info) {
     return {
@@ -1577,15 +1563,15 @@ if (!limitCheck.allowed) {
 
 try {
         const stopRecordingPresence = startRecordingPresence(chatId);
-
+        const mediaResult = await buildMediaPrompt(msg, text);
         let response;
                 try {
-            const mediaResult = await buildMediaPrompt(msg, text || '[Sistem: Pengguna mengirim media tanpa caption.]');
             const currentTimeInstruction = `[INFO SISTEM: Waktu sekarang ${nowWIB()} WIB.]`;
+            const userStatusInstruction = `[INFO SISTEM: User ini statusnya ${limitCheck.info.status}. Sisa limit harian dia: ${limitCheck.info.unlimited ? 'Unlimited' : limitCheck.info.remaining} chat.]`;
             // INJEKSI RAHASIA BIAR FORMAT LIST RAPI & BUTTON MUNCUL
             const formatReminder = `[INFO SISTEM: JANGAN PERNAH membuat list menggunakan tanda bintang (*). WAJIB gunakan angka (1, 2, 3) atau tanda minus (-). Gunakan **teks** untuk bold.]`;
             const buttonReminder = `[INFO SISTEM: Jika suasana obrolan pas, sisipkan 1-3 tombol rekomendasi topik/meme menarik pakai sintaks <<<BUTTONS: [...]>>> di akhir balasan.]`;
-            const finalPrompt = `${currentTimeInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
+            const finalPrompt = `${currentTimeInstruction}\n${userStatusInstruction}\n${formatReminder}\n${buttonReminder}\n\n${mediaResult.finalPrompt}`;
             response = await askAI(chatId, finalPrompt, mediaResult.base64Media, mediaResult.mimeTypeMedia, msg.message_id);
         } finally {
             stopRecordingPresence();
