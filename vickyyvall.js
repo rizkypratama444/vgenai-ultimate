@@ -1220,27 +1220,38 @@ const SEARCH_STATUS_TOPICS = [
     'Scanning source references',
     'Reviewing related details',
     'Checking recent findings',
-    'Comparing available sources'
+    'Comparing available sources',
+    'Reviewing current references',
+    'Checking relevant sources',
+    'Verifying supporting details'
 ];
 
 function randomSearchStatusDuration() {
     const u = Math.random();
     const v = Math.random();
-    const wave = (Math.sin(u * Math.PI * 2) + 1) / 2;
+
+    const wave =
+        (Math.sin(
+            u * Math.PI * 2
+        ) + 1) / 2;
 
     return Math.round(
-        2200 +
-        Math.pow(v, 0.68) * 4200 +
-        wave * 900
+        2300 +
+        Math.pow(v, 0.72) * 3000 +
+        wave * 700
     );
 }
 
-function getShuffledSearchStatusTopics() {
+function shuffleSearchTopics() {
     const topics = [
         ...SEARCH_STATUS_TOPICS
     ];
 
-    for (let i = topics.length - 1; i > 0; i--) {
+    for (
+        let i = topics.length - 1;
+        i > 0;
+        i--
+    ) {
         const j = Math.floor(
             Math.random() * (i + 1)
         );
@@ -1257,7 +1268,11 @@ function getShuffledSearchStatusTopics() {
     return topics;
 }
 
-function startWebSearchStatusBubble(chatId, replyToId, query) {
+function startWebSearchStatusBubble(
+    chatId,
+    replyToId,
+    query
+) {
     let stopped = false;
     let statusMessage = null;
     let timer = null;
@@ -1279,23 +1294,29 @@ function startWebSearchStatusBubble(chatId, replyToId, query) {
         }
     };
 
-    const waitOrStop = ms => new Promise(resolve => {
-        if (stopped) {
-            resolve();
-            return;
-        }
+    const waitOrStop = ms =>
+        new Promise(resolve => {
+            if (stopped) {
+                resolve();
+                return;
+            }
 
-        wake = resolve;
+            wake = resolve;
 
-        timer = setTimeout(() => {
-            timer = null;
-            wake = null;
-            resolve();
-        }, ms);
-    });
+            timer = setTimeout(() => {
+                timer = null;
+                wake = null;
+                resolve();
+            }, ms);
+        });
 
     const editStatus = async baseText => {
-        if (!statusMessage || stopped) return;
+        if (
+            !statusMessage ||
+            stopped
+        ) {
+            return;
+        }
 
         const dots = [
             '.',
@@ -1314,7 +1335,8 @@ function startWebSearchStatusBubble(chatId, replyToId, query) {
                 text,
                 {
                     chat_id: chatId,
-                    message_id: statusMessage.message_id
+                    message_id:
+                        statusMessage.message_id
                 }
             );
         } catch (error) {}
@@ -1322,14 +1344,16 @@ function startWebSearchStatusBubble(chatId, replyToId, query) {
 
     (async () => {
         try {
-            statusMessage = await bot.sendMessage(
-                chatId,
-                '🔍Searching.',
-                {
-                    reply_to_message_id:
-                        replyToId || undefined
-                }
-            );
+            statusMessage =
+                await bot.sendMessage(
+                    chatId,
+                    '🔍Searching.',
+                    {
+                        reply_to_message_id:
+                            replyToId ||
+                            undefined
+                    }
+                );
 
             if (stopped) {
                 await bot.deleteMessage(
@@ -1340,61 +1364,52 @@ function startWebSearchStatusBubble(chatId, replyToId, query) {
                 return;
             }
 
-            await waitOrStop(2000);
-
-            if (stopped) return;
-
-            const topics =
-                getShuffledSearchStatusTopics();
+            let topics =
+                shuffleSearchTopics();
 
             let topicIndex = 0;
 
+            let currentBase =
+                '🔍Searching';
+
+            let stageEndsAt =
+                Date.now() +
+                Math.floor(
+                    Math.random() * 3001
+                );
+
             while (!stopped) {
+                const now =
+                    Date.now();
+
                 if (
-                    topicIndex >= topics.length
+                    now >= stageEndsAt
                 ) {
-                    const reshuffled =
-                        getShuffledSearchStatusTopics();
+                    if (
+                        topicIndex >=
+                        topics.length
+                    ) {
+                        topics =
+                            shuffleSearchTopics();
 
-                    topics.splice(
-                        0,
-                        topics.length,
-                        ...reshuffled
-                    );
+                        topicIndex = 0;
+                    }
 
-                    topicIndex = 0;
+                    currentBase =
+                        `⏳${topics[topicIndex]}`;
+
+                    topicIndex++;
+
+                    stageEndsAt =
+                        Date.now() +
+                        randomSearchStatusDuration();
                 }
 
-                const topic =
-                    topics[topicIndex++];
+                await editStatus(
+                    currentBase
+                );
 
-                const duration =
-                    randomSearchStatusDuration();
-
-                const endAt =
-                    Date.now() + duration;
-
-                while (
-                    !stopped &&
-                    Date.now() < endAt
-                ) {
-                    await editStatus(
-                        `⏳${topic}`
-                    );
-
-                    const remaining =
-                        endAt - Date.now();
-
-                    await waitOrStop(
-                        Math.min(
-                            650,
-                            Math.max(
-                                150,
-                                remaining
-                            )
-                        )
-                    );
-                }
+                await waitOrStop(650);
             }
         } catch (error) {
             console.warn(
@@ -1427,18 +1442,50 @@ async function _askAILogic(
     // ============================================================
 
     let webContext = '';
-latestWebSearchByChat.set(String(chatId), []);
 
-    if (!base64Media && shouldSearchWeb(finalPrompt)) {
+latestWebSearchByChat.set(
+    String(chatId),
+    []
+);
 
+const searchHistoryContext =
+    historyFor(chatId)
+        .filter(
+            item =>
+                item &&
+                typeof item.content === 'string'
+        )
+        .slice(-6)
+        .map(
+            item =>
+                `${item.role === 'assistant' ? 'AI' : 'USER'}: ${item.content}`
+        )
+        .join('\n');
+
+if (
+    !base64Media &&
+    shouldSearchWeb(
+        finalPrompt,
+        searchHistoryContext
+    )
+) {
     let stopSearchStatus = null;
 
     try {
         console.log(
-            `[WEB SEARCH] Mencari data terbaru: ${String(finalPrompt).slice(0, 200)}`
+            `[WEB SEARCH] Query user: ${String(finalPrompt).slice(0, 200)}`
         );
 
-        if (!isSearchCached(finalPrompt)) {
+        console.log(
+            `[WEB SEARCH] Context: ${String(searchHistoryContext).slice(0, 500)}`
+        );
+
+        if (
+            !isSearchCached(
+                finalPrompt,
+                searchHistoryContext
+            )
+        ) {
             stopSearchStatus =
                 startWebSearchStatusBubble(
                     chatId,
@@ -1448,38 +1495,49 @@ latestWebSearchByChat.set(String(chatId), []);
         }
 
         const webData =
-            await searchWeb(finalPrompt);
+            await searchWeb(
+                finalPrompt,
+                searchHistoryContext
+            );
 
         latestWebSearchByChat.set(
             String(chatId),
-            Array.isArray(webData.results)
-                ? webData.results.slice(0, 10)
+            Array.isArray(
+                webData.results
+            )
+                ? webData.results.slice(
+                    0,
+                    10
+                )
                 : []
         );
 
         webContext =
-            formatWebResultsForAI(webData);
+            formatWebResultsForAI(
+                webData
+            );
 
         console.log(
             `[WEB SEARCH] Provider: ${webData.provider} | Hasil: ${webData.results.length}`
         );
 
-    } catch (webError) {
+        console.log(
+            `[WEB SEARCH] Query aktual: ${webData.searchQuery}`
+        );
 
+    } catch (webError) {
         console.error(
             '[WEB SEARCH FAILED]',
             webError.message
         );
-
     } finally {
-
         if (stopSearchStatus) {
             stopSearchStatus();
         }
     }
 }
 
-    const history = historyFor(chatId);
+const history = historyFor(chatId);
     const contents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }]
@@ -1871,34 +1929,34 @@ if (webResults.length > 0) {
                 String(item.url || '')
             )
         )
-        .slice(0, 3)
+        .slice(0, 5)
         .map((item, index) => ({
             text:
-                `🔗 ${String(item.title || `Sumber ${index + 1}`)
+                `🔍 ${String(
+                    item.title ||
+                    `Source ${index + 1}`
+                )
                     .replace(/[\r\n]+/g, ' ')
-                    .slice(0, 38)}`,
+                    .slice(0, 45)}`,
             url: String(item.url).trim()
         }));
 
+    const existingRows =
+        Array.isArray(inline_keyboard)
+            ? inline_keyboard
+            : [];
+
     if (webButtons.length > 0) {
-        inline_keyboard = webButtons.map(button => [button]);
+        const webRows =
+            webButtons.map(button => [
+                button
+            ]);
+
+        inline_keyboard = [
+            ...webRows,
+            ...existingRows
+        ];
     }
-
-    const previewImage =
-        webResults.find(item =>
-            /^https?:\/\/\S+$/i.test(
-                String(item.imageUrl || '')
-            )
-        )?.imageUrl || '';
-
-    if (!imageToSent && previewImage) {
-        imageToSent = previewImage;
-    }
-}
-
-if (isAlightMotionTopic(sourcePrompt)) {
-    imageToSent = AM_PREM_IMAGE_URL;
-    inline_keyboard = buildAMPremButtons();
 }
 
 const limitWarning = buildLimitWarning(limitInfo);
@@ -2125,58 +2183,30 @@ if (!action) {
 // ============================================================
 // 🔒 ANTI-SPAM BUTTON AI
 // ============================================================
-// Hanya callback ask| yang masuk ke sini.
-// Tombol manual/non-AI tidak memakai sistem lock ini.
-const buttonMessageId = query.message?.message_id;
-const buttonKey = `${chatId}:${buttonMessageId}:${data}`;
-
-if (usedAIButtons.has(buttonKey)) {
-    await bot.answerCallbackQuery(query.id, {
-        text: 'Anda sudah memilih tombol ini.',
-        show_alert: false
-    });
-    return;
-}
+const buttonMessageId =
+    query.message?.message_id;
 
 if (aiBusyChats.has(chatId)) {
-    await bot.answerCallbackQuery(query.id, {
-        text: 'AI masih ngerjain respons sebelumnya 😭 tunggu bentar.',
-        show_alert: false
-    });
-    return;
-}
-usedAIButtons.add(buttonKey);
-
-
-// Hapus tombol AI yang baru saja dipencet.
-// Tombol lain di pesan tersebut tetap dipertahankan.
-try {
-    const currentKeyboard =
-        query.message?.reply_markup?.inline_keyboard || [];
-
-    const updatedKeyboard = currentKeyboard
-        .map(row =>
-            row.filter(button => button.callback_data !== data)
-        )
-        .filter(row => row.length > 0);
-
-    await bot.editMessageReplyMarkup(
-        { inline_keyboard: updatedKeyboard },
+    await bot.answerCallbackQuery(
+        query.id,
         {
-            chat_id: chatId,
-            message_id: buttonMessageId
+            text:
+                'AI masih ngerjain respons sebelumnya 😭 tunggu bentar.',
+            show_alert: false
         }
     );
-} catch (e) {
-    // Lock tetap aktif walaupun edit keyboard gagal.
-    console.error('[AI BUTTON LOCK UI ERROR]', e.message);
+
+    return;
 }
-       
-        // MUNCULIN NOTIFIKASI BORDER DI ATAS PAS BUTTON DIKLIK (TOAST)
-        await bot.answerCallbackQuery(query.id, { 
-            text: `Lagi diproses bentar ngab: ${action}...`, 
-            show_alert: false // false = muncul border toast di atas, true = popup di tengah layar
-        });
+
+await bot.answerCallbackQuery(
+    query.id,
+    {
+        text:
+            `Lagi diproses bentar ngab: ${action}...`,
+        show_alert: false
+    }
+);
         
         const finalPrompt =
             `[INFO SISTEM: Pengguna menekan tombol interaktif.]\n` +
