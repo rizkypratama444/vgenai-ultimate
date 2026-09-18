@@ -10,6 +10,12 @@ const fs = require('fs');
 const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 
+const {
+    searchWeb,
+    formatWebResultsForAI,
+    shouldSearchWeb
+} = require('./webSearch');
+
 // ============================================================
 // FIX RAILWAY CRASH (ANTI LOG SPAM)
 // ============================================================
@@ -1116,13 +1122,84 @@ async function buildMediaPrompt(msg, basePrompt) {
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, currentKey, currentModel) {
+
+    // ============================================================
+    // 🌐 WEB SEARCH
+    //
+    // Hanya mencari web kalau pertanyaan membutuhkan
+    // informasi yang kemungkinan terbaru.
+    //
+    // Gambar/media TIDAK memicu web search.
+    // ============================================================
+
+    let webContext = '';
+
+    if (!base64Media && shouldSearchWeb(finalPrompt)) {
+
+        try {
+
+            console.log(
+                `[WEB SEARCH] Mencari data terbaru: ${String(finalPrompt).slice(0, 200)}`
+            );
+
+            const webData = await searchWeb(finalPrompt);
+
+            webContext = formatWebResultsForAI(webData);
+
+            console.log(
+                `[WEB SEARCH] Provider: ${webData.provider} | Hasil: ${webData.results.length}`
+            );
+
+        } catch (webError) {
+
+            // ====================================================
+            // WEB SEARCH GAGAL?
+            //
+            // JANGAN BIKIN GEMINI IKUT MATI.
+            // Gemini tetap lanjut jawab normal.
+            // ====================================================
+
+            console.error(
+                '[WEB SEARCH FAILED]',
+                webError.message
+            );
+        }
+    }
+
     const history = historyFor(chatId);
+
     const contents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }]
     }));
 
-    const parts = [{ text: finalPrompt }];
+    const parts = [{
+        text: webContext
+            ? `${finalPrompt}
+
+[SISTEM WEB SEARCH]
+
+Pertanyaan pengguna membutuhkan informasi yang kemungkinan terbaru.
+
+Gunakan hasil pencarian web di bawah sebagai konteks utama
+untuk fakta yang dapat berubah-ubah.
+
+Jangan mengarang detail yang tidak didukung hasil pencarian.
+
+Jika sumber saling bertentangan,
+jelaskan perbedaannya.
+
+Jika hasil web tidak cukup,
+katakan bahwa datanya belum cukup.
+
+Jangan mengaku melakukan pencarian jika hasil web gagal
+atau kosong.
+
+HASIL WEB:
+
+${webContext}`
+            : finalPrompt
+    }];
     if (base64Media) {
         parts.push({ inline_data: { mime_type: mimeTypeMedia || 'image/jpeg', data: base64Media } });
     }
