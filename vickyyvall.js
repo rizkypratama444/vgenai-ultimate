@@ -1268,7 +1268,7 @@ function shuffleSearchTopics() {
     return topics;
 }
 
-function startWebSearchStatusBubble(
+async function startWebSearchStatusBubble(
     chatId,
     replyToId,
     query
@@ -1328,7 +1328,8 @@ function startWebSearchStatusBubble(
             `${baseText}${dots[dotIndex]}`;
 
         dotIndex =
-            (dotIndex + 1) % dots.length;
+            (dotIndex + 1) %
+            dots.length;
 
         try {
             await bot.editMessageText(
@@ -1339,87 +1340,274 @@ function startWebSearchStatusBubble(
                         statusMessage.message_id
                 }
             );
-        } catch (error) {}
+        } catch {}
     };
 
-    (async () => {
-        try {
-            statusMessage =
-                await bot.sendMessage(
-                    chatId,
-                    '🔍Searching.',
-                    {
-                        reply_to_message_id:
-                            replyToId ||
-                            undefined
-                    }
-                );
+    const getSubject = value => {
+        const stopWords = new Set([
+            'apa',
+            'apakah',
+            'siapa',
+            'kapan',
+            'dimana',
+            'di',
+            'mana',
+            'yang',
+            'dan',
+            'atau',
+            'itu',
+            'ini',
+            'tadi',
+            'sekarang',
+            'terbaru',
+            'terkini',
+            'dong',
+            'sih',
+            'ga',
+            'gak',
+            'nggak',
+            'enggak',
+            'tau',
+            'tahu',
+            'lu',
+            'lo',
+            'gue',
+            'gw',
+            'aku',
+            'kamu',
+            'tolong',
+            'coba',
+            'carikan',
+            'cari',
+            'cek',
+            'online',
+            'web',
+            'search',
+            'jadwal',
+            'tanggal',
+            'lawan',
+            'apa',
+            'siapa',
+            'main',
+            'tanding',
+            'pertandingan',
+            'besok',
+            'hari',
+            'jam',
+            'berapa'
+        ]);
 
-            if (stopped) {
-                await bot.deleteMessage(
-                    chatId,
-                    statusMessage.message_id
-                ).catch(() => {});
+        const words =
+            String(value || '')
+                .replace(/https?:\/\/\S+/gi, '')
+                .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+                .split(/\s+/)
+                .filter(Boolean)
+                .filter(word =>
+                    !stopWords.has(
+                        word.toLowerCase()
+                    )
+                )
+                .slice(0, 4);
 
-                return;
-            }
+        return words.join(' ').trim();
+    };
 
-            let topics =
-                shuffleSearchTopics();
+    const subject =
+        getSubject(query);
 
-            let topicIndex = 0;
+    const contextualize = topic => {
+        if (!subject) {
+            return topic;
+        }
 
+        return `${topic} for ${subject}`;
+    };
+
+    const topics = [
+        'Checking the main result',
+        'Reviewing relevant pages',
+        'Comparing source details',
+        'Checking fresh information',
+        'Verifying useful findings',
+        'Scanning matching results',
+        'Reviewing current references',
+        'Checking supporting sources',
+        'Comparing available data',
+        'Verifying source details',
+        'Scanning related pages',
+        'Reviewing search findings',
+        'Checking recent references',
+        'Comparing relevant sources',
+        'Verifying matching results',
+        'Scanning source coverage',
+        'Reviewing useful pages',
+        'Checking current details',
+        'Comparing search results',
+        'Verifying recent findings',
+        'Scanning relevant information',
+        'Reviewing source context',
+        'Checking matching references',
+        'Comparing current findings',
+        'Verifying supporting details',
+        'Scanning available sources',
+        'Reviewing related information',
+        'Checking fresh references',
+        'Comparing source signals',
+        'Verifying relevant findings',
+        'Scanning matching pages',
+        'Reviewing current sources',
+        'Checking useful references',
+        'Comparing recent information',
+        'Verifying source coverage',
+        'Scanning supporting pages',
+        'Reviewing matching details',
+        'Checking relevant records',
+        'Comparing fresh sources',
+        'Verifying current information',
+        'Scanning recent pages',
+        'Reviewing available findings',
+        'Checking source signals',
+        'Comparing related sources',
+        'Verifying matching details',
+        'Scanning current references',
+        'Reviewing supporting information',
+        'Checking fresh findings',
+        'Comparing relevant pages',
+        'Verifying available sources',
+        'Scanning source details',
+        'Reviewing recent references',
+        'Checking matching information',
+        'Comparing current sources',
+        'Verifying useful details',
+        'Scanning related references',
+        'Reviewing fresh sources',
+        'Checking source findings',
+        'Comparing supporting pages',
+        'Verifying recent information',
+        'Scanning available references',
+        'Reviewing relevant details',
+        'Checking current findings',
+        'Comparing matching sources',
+        'Verifying fresh details',
+        'Scanning supporting references',
+        'Reviewing source information',
+        'Checking recent details',
+        'Comparing available pages',
+        'Verifying related findings',
+        'Scanning current information',
+        'Reviewing matching references',
+        'Checking relevant sources',
+        'Comparing fresh findings',
+        'Verifying source context',
+        'Scanning useful results',
+        'Reviewing current details',
+        'Checking supporting findings',
+        'Comparing recent sources',
+        'Verifying matching pages',
+        'Scanning fresh information',
+        'Reviewing related sources',
+        'Checking available details',
+        'Comparing source findings',
+        'Verifying current references',
+        'Checking the latest signals',
+        'Reviewing the strongest matches',
+        'Comparing source coverage',
+        'Verifying the latest details',
+        'Scanning the newest results',
+        'Reviewing relevant records',
+        'Checking the latest references',
+        'Comparing matching details',
+        'Verifying supporting sources',
+        'Scanning the current results',
+        'Reviewing fresh findings',
+        'Checking related details',
+        'Comparing current pages',
+        'Verifying useful references',
+        'Scanning the latest information'
+    ];
+
+    const shuffled =
+        [...topics].sort(
+            () => Math.random() - 0.5
+        );
+
+    try {
+        statusMessage =
+            await bot.sendMessage(
+                chatId,
+                '🔍Searching.',
+                {
+                    reply_to_message_id:
+                        replyToId ||
+                        undefined
+                }
+            );
+
+        if (stopped) {
+            return stop;
+        }
+
+        (async () => {
             let currentBase =
                 '🔍Searching';
+
+            let topicIndex = 0;
 
             let stageEndsAt =
                 Date.now() +
                 Math.floor(
-                    Math.random() * 3001
-                );
+                    Math.random() * 701
+                ) +
+                300;
 
             while (!stopped) {
                 const now =
                     Date.now();
 
                 if (
-                    now >= stageEndsAt
+                    now >=
+                    stageEndsAt
                 ) {
-                    if (
-                        topicIndex >=
-                        topics.length
-                    ) {
-                        topics =
-                            shuffleSearchTopics();
-
-                        topicIndex = 0;
-                    }
+                    const rawTopic =
+                        shuffled[
+                            topicIndex %
+                            shuffled.length
+                        ];
 
                     currentBase =
-                        `⏳${topics[topicIndex]}`;
+                        `⏳${contextualize(
+                            rawTopic
+                        )}`;
 
                     topicIndex++;
 
                     stageEndsAt =
                         Date.now() +
-                        randomSearchStatusDuration();
+                        Math.floor(
+                            Math.random() *
+                            901
+                        ) +
+                        900;
                 }
 
                 await editStatus(
                     currentBase
                 );
 
-                await waitOrStop(650);
+                await waitOrStop(600);
             }
-        } catch (error) {
-            console.warn(
-                '[SEARCH STATUS ERROR]',
-                error.message
-            );
-        }
-    })();
+        })();
 
-    return stop;
+        return stop;
+    } catch (error) {
+        console.warn(
+            '[SEARCH STATUS ERROR]',
+            error.message
+        );
+
+        return stop;
+    }
 }
 
 async function _askAILogic(
@@ -1487,12 +1675,11 @@ if (
             )
         ) {
             stopSearchStatus =
-                startWebSearchStatusBubble(
-                    chatId,
-                    replyToId,
-                    finalPrompt
-                );
-        }
+    await startWebSearchStatusBubble(
+        chatId,
+        replyToId,
+        finalPrompt
+    );
 
         const webData =
             await searchWeb(
@@ -1547,29 +1734,43 @@ const history = historyFor(chatId);
         text: webContext
             ? `${finalPrompt}
 
+const parts = [{
+    text: webContext
+        ? `${finalPrompt}
+
 [SISTEM WEB SEARCH]
 
-Pertanyaan pengguna membutuhkan informasi yang kemungkinan terbaru.
+WEB SEARCH AKTIF.
 
-Gunakan hasil pencarian web di bawah sebagai konteks utama
-untuk fakta yang dapat berubah-ubah.
+Gunakan hasil web sebagai evidence utama untuk fakta yang dapat berubah.
 
-Jangan mengarang detail yang tidak didukung hasil pencarian.
+Jika hasil web memiliki jawaban yang jelas:
+→ jawab langsung berdasarkan hasil tersebut.
+→ jangan mengaku tidak tahu.
+→ jangan kembali ke tebakan dari memori lama.
 
-Jika sumber saling bertentangan,
-jelaskan perbedaannya.
+Jika pertanyaan meminta jadwal, tanggal, jam, lawan, skor, klasemen, harga, status, berita, atau informasi terkini:
+→ prioritaskan data dari hasil WEB SEARCH.
 
-Jika hasil web tidak cukup,
-katakan bahwa datanya belum cukup.
+Jika ada sumber resmi klub, liga, organisasi, sekolah, perusahaan, atau instansi:
+→ prioritaskan sumber resmi tersebut jika relevan.
 
-Jangan mengaku melakukan pencarian jika hasil web gagal
-atau kosong.
+Jika beberapa sumber memberikan informasi yang sama:
+→ gunakan informasi tersebut secara langsung.
+
+Jika sumber berbeda:
+→ jelaskan perbedaannya secara singkat.
+
+Jika hasil web benar-benar tidak cukup:
+→ katakan data yang ditemukan belum cukup.
+→ jangan mengarang bagian yang kosong.
 
 HASIL WEB:
 
 ${webContext}`
-            : finalPrompt
-    }];
+        : finalPrompt
+}];
+
     if (base64Media) {
         parts.push({ inline_data: { mime_type: mimeTypeMedia || 'image/jpeg', data: base64Media } });
     }
@@ -1915,48 +2116,6 @@ async function processAIResponse(
 if (isAlightMotionTopic(sourcePrompt)) {
     imageToSent = AM_PREM_IMAGE_URL;
     inline_keyboard = buildAMPremButtons();
-}
-
-const webResults = latestWebSearchByChat.get(
-    String(chatId)
-) || [];
-
-if (webResults.length > 0) {
-    const webButtons = webResults
-        .filter(item =>
-            item &&
-            /^https?:\/\/\S+$/i.test(
-                String(item.url || '')
-            )
-        )
-        .slice(0, 5)
-        .map((item, index) => ({
-            text:
-                `🔍 ${String(
-                    item.title ||
-                    `Source ${index + 1}`
-                )
-                    .replace(/[\r\n]+/g, ' ')
-                    .slice(0, 45)}`,
-            url: String(item.url).trim()
-        }));
-
-    const existingRows =
-        Array.isArray(inline_keyboard)
-            ? inline_keyboard
-            : [];
-
-    if (webButtons.length > 0) {
-        const webRows =
-            webButtons.map(button => [
-                button
-            ]);
-
-        inline_keyboard = [
-            ...webRows,
-            ...existingRows
-        ];
-    }
 }
 
 const limitWarning = buildLimitWarning(limitInfo);
