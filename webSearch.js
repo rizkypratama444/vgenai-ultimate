@@ -42,8 +42,13 @@
 //
 // ============================================================
 
-const REMOTE_HTML_URL =
-    'http://localhost:2435/storage/emulated/0/Telegram+AI/Revamp+Open+AI+x+Gemini.html';
+const fs = require('fs');
+const path = require('path');
+
+const LOCAL_HTML_PATH = path.join(
+    __dirname,
+    'Revamp Open AI x Gemini.html'
+);
 
 
 // ============================================================
@@ -76,12 +81,11 @@ const CONFIG_CACHE_TIME =
 // ============================================================
 // 📥 LOAD CONFIG DARI HTML
 // ============================================================
-
 async function loadWebSearchConfig() {
 
     const now = Date.now();
 
-    // Pakai cache kalau masih valid.
+    // Pakai cache kalau masih valid
     if (
         cachedConfig &&
         now - configLoadedAt < CONFIG_CACHE_TIME
@@ -89,40 +93,33 @@ async function loadWebSearchConfig() {
         return cachedConfig;
     }
 
-
     console.log(
-        '[WEB SEARCH] Mengambil config dari HTML localhost...'
+        '[WEB SEARCH] Membaca config dari HTML lokal...'
     );
 
+    // ========================================================
+    // 📂 BACA FILE HTML LANGSUNG DARI FILESYSTEM
+    // ========================================================
 
-    const res = await fetch(
-        REMOTE_HTML_URL,
-        {
-            method: 'GET',
-            headers: {
-                'Accept': 'text/html'
-            }
-        }
-    );
+    let html;
 
+    try {
 
-    if (!res.ok) {
+        html = await fs.promises.readFile(
+            LOCAL_HTML_PATH,
+            'utf8'
+        );
+
+    } catch (error) {
 
         throw new Error(
-            `Gagal mengambil HTML config. HTTP ${res.status}`
+            `HTML config tidak ditemukan: ${LOCAL_HTML_PATH}`
         );
     }
 
 
-    const html = await res.text();
-
-
     // ========================================================
-    // CARI:
-    //
-    // <script type="application/json"
-    // id="vgen-websearch-config">
-    //
+    // 🔎 CARI CONFIG
     // ========================================================
 
     const match = html.match(
@@ -138,8 +135,11 @@ async function loadWebSearchConfig() {
     }
 
 
-    let config;
+    // ========================================================
+    // 🧠 PARSE JSON
+    // ========================================================
 
+    let config;
 
     try {
 
@@ -156,7 +156,7 @@ async function loadWebSearchConfig() {
 
 
     // ========================================================
-    // VALIDASI
+    // 🔐 VALIDASI API KEY
     // ========================================================
 
     if (!config.tavilyApiKey) {
@@ -175,21 +175,33 @@ async function loadWebSearchConfig() {
     }
 
 
+    // ========================================================
+    // 🔢 MAX RESULT
+    // ========================================================
+
     const maxResults =
-        Number(config.maxResults) || DEFAULT_MAX_SEARCH_RESULTS;
+        Number(config.maxResults) ||
+        DEFAULT_MAX_SEARCH_RESULTS;
 
 
     cachedConfig = {
 
         tavilyApiKey:
-            String(config.tavilyApiKey).trim(),
+            String(
+                config.tavilyApiKey
+            ).trim(),
 
         serperApiKey:
-            String(config.serperApiKey).trim(),
+            String(
+                config.serperApiKey
+            ).trim(),
 
         maxResults:
             Math.min(
-                Math.max(maxResults, 1),
+                Math.max(
+                    maxResults,
+                    1
+                ),
                 5
             )
     };
@@ -199,13 +211,12 @@ async function loadWebSearchConfig() {
 
 
     console.log(
-        `[WEB SEARCH] Config berhasil dimuat. Max hasil: ${cachedConfig.maxResults}`
+        `[WEB SEARCH] Config HTML berhasil dibaca. Max hasil: ${cachedConfig.maxResults}`
     );
 
 
     return cachedConfig;
 }
-
 
 // ============================================================
 // 🧹 CLEAN QUERY
