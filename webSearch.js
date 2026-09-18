@@ -1,7 +1,8 @@
 const TAVILY_API_KEY = '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';
 const SERPER_API_KEY = 'e52de145383e7437e28cf88e262a1264f96d1243';
 
-const MAX_SEARCH_RESULTS = 5;
+const MIN_SEARCH_RESULTS = 4;
+const MAX_SEARCH_RESULTS = 10;
 const REQUEST_TIMEOUT = 15000;
 const MAX_QUERY_LENGTH = 500;
 
@@ -10,6 +11,13 @@ const SEARCH_CONFIG = {
     serperApiKey: SERPER_API_KEY.trim(),
     maxResults: MAX_SEARCH_RESULTS
 };
+
+function randomSearchResultLimit() {
+    return Math.floor(
+        Math.random() *
+        (MAX_SEARCH_RESULTS - MIN_SEARCH_RESULTS + 1)
+    ) + MIN_SEARCH_RESULTS;
+}
 
 function cleanQuery(query) {
     return String(query || '')
@@ -149,44 +157,169 @@ async function searchSerper(query, config) {
     );
 }
 
-async function searchWeb(query) {
-    const config = await loadWebSearchConfig();
-    const errors = [];
+const SEARCH_CACHE = new Map();
+const SEARCH_CACHE_TTL = 60000;
+const PREVIEW_TIMEOUT = 5000;
 
-    try {
-        const results = await searchTavily(query, config);
-
-        if (results.length > 0) {
-            console.log(`[WEB SEARCH] Tavily berhasil: ${results.length} hasil`);
-
-            return {
-                provider: 'Tavily',
-                results: results.slice(0, MAX_SEARCH_RESULTS)
-            };
-        }
-
-        errors.push('Tavily: hasil kosong');
-    } catch (error) {
-        errors.push(`Tavily: ${error.message}`);
-        console.warn(`[WEB SEARCH] Tavily gagal: ${error.message}`);
+async function resolvePreviewImage(pageUrl) {
+    if (!/^https?:\/\//i.test(String(pageUrl || ''))) {
+        return '';
     }
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT);
+
     try {
-        const results = await searchSerper(query, config);
+        const response = await fetch(pageUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 VGenAI Web Preview'
+            }
+        });
 
-        if (results.length > 0) {
-            console.log(`[WEB SEARCH] Serper berhasil: ${results.length} hasil`);
-
-            return {
-                provider: 'Serper',
-                results: results.slice(0, MAX_SEARCH_RESULTS)
-            };
+        if (!response.ok) {
+            return '';
         }
 
-        errors.push('Serper: hasil kosong');
-    } catch (error) {
-        errors.push(`Serper: ${error.message}`);
-        console.warn(`[WEB SEARCH] Serper gagal: ${error.message}`);
+        const contentType = response.headers.get('content-type') || '';
+
+        if (!contentType.includes('text/html')) {
+            return '';
+        }
+
+        const html = (await response.text()).slice(0, 300000);
+
+        const patterns = [
+            /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+            /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+            /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+            /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i
+        ];
+
+        for (const pattern of patterns) {
+            const match = html.match(pattern);
+
+            if (!match || !match[1]) {
+                continue;
+            }
+
+            try {
+                return new URL(match[1], pageUrl).href;
+            } catch {
+                continue;
+            }
+        }
+
+        return '';
+    } catch {
+        return '';
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function attachPreviewImages(results, maxResults = MAX_SEARCH_RESULTS) {
+    const list = Array.isArray(results)
+        ? results.slice(0, maxResults)
+        : [];
+
+    const enriched = await Promise.all(
+        list.map(async item => ({
+            ...item,
+            imageUrl: await resolvePreviewImage(item.url)
+        }))
+    );
+
+    return enriched;
+}
+
+function isSearchCached(query) {
+    const cacheKey = cleanQuery(query).toLowerCase();
+
+    if (!cacheKey) return false;
+
+    const cached = SEARCH_CACHE.get(cacheKey);
+
+    return Boolean(
+        cached &&
+        Date.now() - cached.timestamp < SEARCH_CACHE_TTL
+    );
+}
+
+async function searchWeb(query) {
+    const cacheKey = cleanQuery(query).toLowerCase();
+
+    if (!cacheKey) {
+        throw new Error('Query pencarian kosong.');
+    }
+
+    const cached = SEARCH_CACHE.get(cacheKey);
+
+    if (
+        cached &&
+        Date.now() - cached.timestamp < SEARCH_CACHE_TTL
+    ) {
+        console.log('[WEB SEARCH] Menggunakan cache.');
+        return cached.data;
+    }
+
+    const maxResults = randomSearchResultLimit();
+
+    const config = {
+        ...SEARCH_CONFIG,
+        maxResults
+    };
+
+    const providers = [
+        ['Tavily', searchTavily],
+        ['Serper', searchSerper]
+    ];
+
+    const errors = [];
+
+    for (const [name, searchFn] of providers) {
+        try {
+            const rawResults = await searchFn(query, config);
+
+            if (
+                Array.isArray(rawResults) &&
+                rawResults.length > 0
+            ) {
+                const results = await attachPreviewImages(
+                    rawResults,
+                    maxResults
+                );
+
+                const data = {
+                    provider: name,
+                    resultLimit: maxResults,
+                    results: results.slice(0, maxResults)
+                };
+
+                SEARCH_CACHE.set(cacheKey, {
+                    timestamp: Date.now(),
+                    data
+                });
+
+                console.log(
+                    `[WEB SEARCH] ${name} berhasil: ${data.results.length} hasil`
+                );
+
+                return data;
+            }
+
+            errors.push(`${name}: hasil kosong`);
+        } catch (error) {
+            errors.push(
+                `${name}: ${error.message}`
+            );
+
+            console.warn(
+                `[WEB SEARCH] ${name} gagal: ${error.message}`
+            );
+        }
     }
 
     throw new Error(
@@ -230,13 +363,55 @@ function shouldSearchWeb(text) {
         return false;
     }
 
-    const keywords = [
+    const explicitSearchKeywords = [
+        'cari',
+        'carikan',
+        'cariin',
+        'tolong cari',
+        'tolong carikan',
+        'coba cari',
+        'bisa cari',
+        'bantu cari',
+        'cari tahu',
+        'cari info',
+        'cari informasi',
+        'cari berita',
+        'cari di internet',
+        'cari online',
+        'cari web',
+        'cek online',
+        'cek internet',
+        'cek web',
+        'cek sumber',
+        'cek fakta',
+        'cek faktanya',
+        'verifikasi',
+        'browsing',
+        'browse',
+        'search',
+        'search web',
+        'search internet',
+        'search online',
+        'search the web',
+        'search the internet',
+        'google it',
+        'google search',
+        'lookup',
+        'look up',
+        'find online',
+        'find information',
+        'find info',
+        'fact check',
+        'fact-check',
+        'verify'
+    ];
+
+    const currentKeywords = [
         'terbaru',
         'terkini',
         'sekarang',
         'saat ini',
         'hari ini',
-        'hariini',
         'barusan',
         'baru saja',
         'tadi',
@@ -253,45 +428,9 @@ function shouldSearchWeb(text) {
         'belakangan ini',
         'akhir akhir ini',
         'akhir-akhir ini',
-        'update terbaru',
-        'info terbaru',
-        'informasi terbaru',
-        'kabar terbaru',
-        'berita terbaru',
-        'data terbaru',
-        'versi terbaru',
-        'harga terbaru',
-        'status terbaru',
-        'rilis terbaru',
-        'release terbaru',
-        'perkembangan terbaru',
-        'kejadian terbaru',
-        'peristiwa terbaru',
-        'laporan terbaru',
-        'sumber terbaru',
-        'fakta terbaru',
-        'hasil terbaru',
-        'hasil hari ini',
-        'berita hari ini',
-        'kabar hari ini',
-        'info hari ini',
-        'informasi hari ini',
-        'data hari ini',
-        'status hari ini',
-        'update hari ini',
         'latest',
-        'latest news',
-        'latest update',
-        'latest version',
-        'latest release',
-        'latest information',
-        'latest info',
-        'latest data',
-        'latest price',
-        'latest result',
         'recent',
         'recently',
-        'right now',
         'currently',
         'current',
         'today',
@@ -301,109 +440,79 @@ function shouldSearchWeb(text) {
         'this week',
         'this month',
         'this year',
-        'next week',
-        'next month',
-        'next year',
-        'newest',
+        'right now',
         'just now',
         'breaking',
-        'breaking news',
-        'live update',
-        'live news',
+        'live',
         'real time',
-        'realtime',
+        'realtime'
+    ];
 
+    const newsKeywords = [
         'berita',
+        'berita terbaru',
+        'berita terkini',
+        'berita hari ini',
         'kabar',
-        'headline',
+        'kabar terbaru',
+        'kabar hari ini',
         'news',
         'news today',
-        'news terbaru',
-        'news terkini',
-        'what happened',
-        'what is happening',
-        'apa yang terjadi',
-        'apa kabar',
+        'latest news',
+        'breaking news',
+        'headline',
         'kejadian',
         'peristiwa',
         'laporan',
-        'laporan hari ini',
-        'laporan terbaru',
-        'berita terkini',
-        'berita nasional',
-        'berita internasional',
-        'berita dunia',
-        'berita teknologi',
-        'berita ekonomi',
-        'berita politik',
-        'berita olahraga',
-        'berita bisnis',
-        'berita game',
-        'berita gadget',
-        'berita crypto',
-        'berita saham',
-        'berita sepak bola',
-        'berita film',
-        'berita musik',
+        'perkembangan'
+    ];
 
-        'klasemen',
-        'peringkat liga',
-        'peringkat',
-        'top skor',
-        'top assist',
-        'pencetak gol',
-        'live score',
-        'live skor',
-        'score live',
-        'skor langsung',
-        'hasil pertandingan',
-        'hasil match',
-        'hasil laga',
-        'hasil pertandingan hari ini',
-        'pertandingan',
-        'pertandingan hari ini',
-        'pertandingan besok',
-        'jadwal pertandingan',
-        'jadwal match',
-        'jadwal laga',
-        'jadwal bola',
-        'jadwal sepak bola',
-        'jadwal pertandingan hari ini',
-        'jadwal pertandingan besok',
-        'transfer pemain',
-        'transfer terbaru',
-        'bursa transfer',
-        'rumor transfer',
-        'pemain baru',
-        'pelatih baru',
-        'cedera pemain',
-        'starting eleven',
-        'starting xi',
-        'susunan pemain',
-        'line up',
-        'lineup',
-        'formasi',
-        'kartu merah',
-        'kartu kuning',
-        'gol',
-        'assist',
-        'football',
-        'soccer',
-        'league',
-        'standings',
-        'fixtures',
-        'fixture',
-        'match result',
-        'match results',
-        'football results',
-        'football standings',
-        'football schedule',
-        'transfer news',
-        'player transfer',
-        'sports news',
-        'sport news',
-        'olahraga terbaru',
-        'berita olahraga',
+    const sportsKeywords = [
+        'persija',
+        'persib',
+        'madura united',
+        'bali united',
+        'persebaya',
+        'arema',
+        'pss sleman',
+        'psis',
+        'persis solo',
+        'barito putera',
+        'dewa united',
+        'borneo',
+        'malut united',
+        'semen padang',
+        'psbs biak',
+        'persita',
+        'persik',
+        'persis',
+        'psm',
+        'pso',
+        'real madrid',
+        'barcelona',
+        'atletico madrid',
+        'manchester united',
+        'manchester city',
+        'liverpool',
+        'arsenal',
+        'chelsea',
+        'tottenham',
+        'bayern munich',
+        'psg',
+        'juventus',
+        'inter milan',
+        'ac milan',
+        'dortmund',
+        'liga 1',
+        'liga indonesia',
+        'liga 2',
+        'premier league',
+        'la liga',
+        'serie a',
+        'bundesliga',
+        'champions league',
+        'europa league',
+        'conference league',
         'nba',
         'nfl',
         'mlb',
@@ -418,77 +527,153 @@ function shouldSearchWeb(text) {
         'badminton',
         'basket',
         'basketball',
+        'sepak bola',
+        'football',
+        'soccer',
+        'olahraga',
+        'klasemen',
+        'klasemen liga',
+        'tabel liga',
+        'tabel klasemen',
+        'peringkat',
+        'ranking',
+        'standings',
+        'posisi liga',
+        'posisi klasemen',
+        'top skor',
+        'top assist',
+        'skor',
+        'score',
+        'live score',
+        'hasil pertandingan',
+        'hasil laga',
+        'hasil match',
+        'pertandingan',
+        'match',
+        'laga',
+        'jadwal',
+        'jadwal pertandingan',
+        'jadwal laga',
+        'jadwal match',
+        'jadwal bola',
+        'jadwal sepak bola',
+        'lawan',
+        'lawan apa',
+        'lawan siapa',
+        'main lawan',
+        'siapa lawannya',
+        'siapa yang dilawan',
+        'siapa yang menang',
+        'siapa pemenang',
+        'siapa juara',
+        'siapa memimpin',
+        'siapa pemimpin',
+        'siapa nomor satu',
+        'pemain',
+        'player',
+        'pemain terbaru',
+        'transfer',
+        'transfer pemain',
+        'bursa transfer',
+        'rumor transfer',
+        'pelatih',
+        'coach',
+        'starting eleven',
+        'starting xi',
+        'line up',
+        'lineup',
+        'susunan pemain',
+        'formasi',
+        'cedera pemain',
+        'kartu merah',
+        'kartu kuning',
+        'gol',
+        'assist'
+    ];
 
-        'harga bitcoin',
-        'harga btc',
-        'harga ethereum',
-        'harga eth',
-        'harga crypto',
-        'harga kripto',
-        'harga saham',
-        'harga emas',
-        'harga dolar',
-        'kurs dolar',
-        'kurs usd',
-        'kurs eur',
-        'kurs jpy',
-        'kurs gbp',
-        'kurs aud',
-        'kurs sgd',
-        'kurs idr',
-        'nilai tukar',
-        'exchange rate',
-        'exchange rates',
-        'stock price',
-        'share price',
-        'bitcoin price',
-        'btc price',
-        'crypto price',
-        'crypto prices',
-        'ethereum price',
-        'eth price',
-        'gold price',
-        'gold price today',
-        'forex',
-        'forex rate',
-        'market price',
-        'market prices',
-        'market update',
-        'market today',
-        'saham',
-        'saham hari ini',
-        'saham terbaru',
+    const marketKeywords = [
+        'harga',
+        'harga terbaru',
+        'harga sekarang',
+        'harga hari ini',
+        'price',
+        'price today',
+        'current price',
+        'stok',
+        'stock',
+        'ready stock',
+        'restock',
+        'tersedia',
+        'ketersediaan',
+        'available',
+        'availability',
+        'in stock',
+        'out of stock',
+        'promo',
+        'promo terbaru',
+        'promo hari ini',
+        'diskon',
+        'diskon terbaru',
+        'diskon hari ini',
+        'bitcoin',
+        'btc',
+        'ethereum',
+        'eth',
         'crypto',
         'kripto',
-        'bitcoin',
-        'ethereum',
+        'saham',
+        'stock market',
         'emas',
+        'gold',
         'dolar',
         'rupiah',
         'kurs',
-        'valas',
-        'investasi',
-        'inflasi',
-        'suku bunga',
-        'bank indonesia',
-        'bi rate',
-        'fed rate',
-        'interest rate',
+        'nilai tukar',
+        'exchange rate',
+        'forex',
+        'market'
+    ];
 
+    const scheduleKeywords = [
+        'tanggal',
+        'tanggal berapa',
+        'tanggal berapa main',
+        'tanggal main',
+        'kapan main',
+        'kapan pertandingan',
+        'kapan laga',
+        'kapan match',
+        'kapan tanding',
+        'jam berapa',
+        'pukul berapa',
+        'main jam berapa',
+        'pertandingan jam berapa',
+        'jadwal rilis',
+        'release date',
+        'release schedule',
+        'launch date',
+        'tayang kapan',
+        'tayang jam berapa',
+        'kapan tayang',
+        'kapan keluar',
+        'kapan rilis',
+        'besok lawan',
+        'besok main',
+        'hari apa main',
+        'hari apa tanding'
+    ];
+
+    const weatherKeywords = [
         'cuaca',
-        'prakiraan cuaca',
-        'ramalan cuaca',
         'cuaca hari ini',
         'cuaca sekarang',
         'cuaca besok',
-        'cuaca minggu ini',
-        'hujan hari ini',
-        'hujan sekarang',
+        'prakiraan cuaca',
+        'ramalan cuaca',
+        'hujan',
         'akan hujan',
         'bakal hujan',
-        'kemungkinan hujan',
-        'suhu sekarang',
-        'suhu hari ini',
+        'suhu',
         'temperature',
         'weather',
         'weather today',
@@ -496,26 +681,24 @@ function shouldSearchWeb(text) {
         'weather tomorrow',
         'weather forecast',
         'forecast',
-        'rain forecast',
-        'temperature today',
-        'temperature now',
+        'rain forecast'
+    ];
 
+    const techKeywords = [
         'versi terbaru',
         'versi sekarang',
         'rilis terbaru',
         'release terbaru',
+        'software terbaru',
         'update software',
         'update aplikasi',
         'update android',
         'update ios',
-        'versi android',
-        'versi ios',
-        'versi windows',
-        'versi linux',
-        'versi macos',
+        'update windows',
+        'update linux',
+        'update macos',
         'github terbaru',
         'github release',
-        'github releases',
         'npm terbaru',
         'npm version',
         'nodejs terbaru',
@@ -527,234 +710,132 @@ function shouldSearchWeb(text) {
         'gemini update',
         'api terbaru',
         'api update',
-        'software update',
-        'latest version',
-        'latest release',
-        'latest update',
-        'latest software',
-        'github update',
-        'npm update',
-        'node update',
-        'android update',
-        'ios update',
-        'windows update',
-        'macos update',
-        'linux update',
+        'package terbaru',
+        'library terbaru',
+        'dependency terbaru',
         'chrome update',
         'firefox update',
         'browser update',
         'security update',
-        'framework terbaru',
-        'library terbaru',
-        'package terbaru',
-        'dependency terbaru',
-        'npm package',
         'javascript terbaru',
-        'nodejs',
-        'react terbaru',
-        'nextjs terbaru',
-        'next.js terbaru',
         'python terbaru',
         'typescript terbaru',
-
-        'cari info',
-        'carikan info',
-        'cari informasi',
-        'carikan informasi',
-        'cari berita',
-        'carikan berita',
-        'cari di internet',
-        'carikan di internet',
-        'cari online',
-        'carikan online',
-        'cari web',
-        'carikan web',
-        'search web',
-        'web search',
-        'search internet',
-        'internet search',
-        'look up',
-        'search for',
-        'find information',
-        'find info',
-        'find out',
-        'lookup',
-        'cek di internet',
-        'cek online',
-        'cek web',
-        'cek internet',
-        'tolong cari',
-        'tolong carikan',
-        'tolong cek online',
-        'tolong cek internet',
-        'coba cari',
-        'coba cek',
-        'bisa cari',
-        'bisa cek',
-        'bantu cari',
-        'bantu cek',
-        'cari tahu',
-        'carikan tahu',
-        'kasih info terbaru',
-        'kasih informasi terbaru',
-        'kasih berita terbaru',
-        'minta info terbaru',
-        'minta informasi terbaru',
-        'minta berita terbaru',
-        'search it',
-        'search this',
-        'search that',
-        'search online',
-        'search the web',
-        'search the internet',
-        'find online',
-        'find on google',
-        'google it',
-        'google search',
-        'cek google',
-        'cari google',
-        'carikan google',
-        'telusuri',
-        'telusurin',
-        'telusuri internet',
-        'telusuri web',
-        'browsing',
-        'browse web',
-        'browse internet',
-        'web lookup',
-        'online lookup',
-        'internet lookup',
-        'verify online',
-        'verifikasi online',
-        'cek sumber',
-        'cek sumber online',
-        'cek faktanya',
-        'cek fakta',
-        'fact check',
-        'fact-check',
-        'verify this',
-        'verify that',
-        'benar gak',
-        'benar nggak',
-        'bener gak',
-        'bener nggak',
-        'apakah benar',
-        'apakah ini benar',
-        'emang benar',
-        'emang bener',
-
-        'harga',
-        'berapa harga',
-        'berapa harganya',
-        'biaya terbaru',
-        'tarif terbaru',
-        'rate terbaru',
-        'price today',
-        'price now',
-        'cost today',
-        'current price',
-
-        'siapa sekarang',
-        'siapa yang sekarang',
-        'siapa terbaru',
-        'siapa pemimpin',
-        'siapa presiden',
-        'siapa ceo',
-        'siapa direktur',
-        'siapa pemain',
-        'siapa pelatih',
-
-        'kapan',
-        'kapan rilis',
-        'kapan tayang',
-        'kapan keluar',
-        'kapan launching',
-        'kapan launch',
-        'jadwal rilis',
-        'release date',
-        'release schedule',
-        'launch date',
-        'launching date',
-        'air date',
-        'premiere date',
-
-        'dimana sekarang',
-        'di mana sekarang',
-        'lokasi sekarang',
-        'location now',
-        'where is',
-        'where are',
-        'status sekarang',
-        'status saat ini',
-        'current status',
-        'live status',
-
-        'film terbaru',
-        'film sekarang',
-        'movie terbaru',
-        'movie release',
-        'series terbaru',
-        'tv series terbaru',
-        'anime terbaru',
-        'anime episode',
-        'episode terbaru',
-        'episode baru',
-        'game terbaru',
-        'game release',
-        'game update',
-        'game news',
-        'steam update',
-        'playstation update',
-        'xbox update',
-        'nintendo update',
-        'music release',
-        'album terbaru',
-        'lagu terbaru',
-        'konser terbaru',
-        'event terbaru',
-
-        'restoran terbaru',
-        'tempat terbaru',
-        'wisata terbaru',
-        'hotel terbaru',
-        'promo terbaru',
-        'diskon terbaru',
-        'promo hari ini',
-        'diskon hari ini',
-
-        'earthquake',
-        'gempa',
-        'gempa terbaru',
-        'gempa hari ini',
-        'banjir',
-        'banjir terbaru',
-        'banjir hari ini',
-        'gunung meletus',
-        'erupsi',
-        'erupsi terbaru',
-        'tsunami',
-        'bencana terbaru',
-        'disaster news',
-
-        'jadwal kereta',
-        'jadwal pesawat',
-        'jadwal penerbangan',
-        'flight status',
-        'flight schedule',
-        'train schedule',
-        'traffic',
-        'macet',
-        'kemacetan',
-        'jalan ditutup',
-        'road closure',
-        'traffic update'
+        'react terbaru',
+        'nextjs terbaru'
     ];
 
-    return containsAny(value, keywords);
+    const questionKeywords = [
+        'apa yang terjadi',
+        'apa kabar terbaru',
+        'apa update terbaru',
+        'apa berita terbaru',
+        'siapa yang menang',
+        'siapa pemenang',
+        'siapa juara',
+        'siapa yang memimpin',
+        'siapa pemimpin',
+        'siapa nomor satu',
+        'siapa peringkat pertama',
+        'kapan',
+        'dimana',
+        'di mana',
+        'where',
+        'when',
+        'who won',
+        'who is winning',
+        'who leads',
+        'who is leading',
+        'what happened',
+        'what happened today',
+        'when is',
+        'where is',
+        'who is'
+    ];
+
+    const hasExplicitSearch = explicitSearchKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasCurrentKeyword = currentKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasNewsKeyword = newsKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasSportsKeyword = sportsKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasMarketKeyword = marketKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasScheduleKeyword = scheduleKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasWeatherKeyword = weatherKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasTechKeyword = techKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasQuestionKeyword = questionKeywords.some(
+        keyword => value.includes(keyword)
+    );
+
+    const hasDatePattern =
+        /\b(?:tanggal|tgl)\s*\d{1,2}\b/i.test(value) ||
+        /\b\d{1,2}\s+(?:januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)\b/i.test(value) ||
+        /\b(?:19|20)\d{2}\b/.test(value);
+
+    const hasMatchPattern =
+        /\b(?:lawan|vs|versus|tanding|tandingan|main|bermain)\b/i.test(value);
+
+    const hasRankingPattern =
+        /\b(?:klasemen|ranking|peringkat|posisi|standings|tabel)\b/i.test(value);
+
+    const looksLikeCurrentSportsQuestion =
+        hasSportsKeyword &&
+        (
+            hasCurrentKeyword ||
+            hasScheduleKeyword ||
+            hasDatePattern ||
+            hasMatchPattern ||
+            hasRankingPattern ||
+            hasQuestionKeyword
+        );
+
+    const looksLikeCurrentDataQuestion =
+        (
+            hasMarketKeyword ||
+            hasWeatherKeyword ||
+            hasTechKeyword
+        ) &&
+        (
+            hasCurrentKeyword ||
+            hasQuestionKeyword ||
+            hasExplicitSearch
+        );
+
+    return (
+        hasExplicitSearch ||
+        hasNewsKeyword ||
+        looksLikeCurrentSportsQuestion ||
+        looksLikeCurrentDataQuestion ||
+        (hasDatePattern && hasQuestionKeyword) ||
+        (hasDatePattern && hasMatchPattern) ||
+        (hasScheduleKeyword && hasQuestionKeyword)
+    );
 }
 
 module.exports = {
     searchWeb,
     formatWebResultsForAI,
-    shouldSearchWeb
+    shouldSearchWeb,
+    isSearchCached
 };

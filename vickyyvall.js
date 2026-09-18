@@ -13,7 +13,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const {
     searchWeb,
     formatWebResultsForAI,
-    shouldSearchWeb
+    shouldSearchWeb,
+    isSearchCached
 } = require('./webSearch');
 
 // ============================================================
@@ -227,6 +228,7 @@ function getLimitLabel(info) {
 // Memori per chat Telegram.
 const userHistory = new Map();
 const aiMutedChats = new Set();
+const latestWebSearchByChat = new Map();
 
 // ============================================================
 // 🔒 AI BUTTON ANTI-SPAM
@@ -1121,7 +1123,299 @@ async function buildMediaPrompt(msg, basePrompt) {
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, currentKey, currentModel) {
+const SEARCH_STATUS_TOPICS = [
+    'Scanning relevant sources',
+    'Reviewing relevant pages',
+    'Checking source details',
+    'Comparing source references',
+    'Filtering useful results',
+    'Verifying source information',
+    'Reading relevant passages',
+    'Connecting related information',
+    'Narrowing relevant results',
+    'Checking fresh signals',
+    'Reviewing supporting details',
+    'Comparing matching results',
+    'Checking live web sources',
+    'Scanning current references',
+    'Reviewing recent information',
+    'Cross-checking source details',
+    'Checking related pages',
+    'Matching relevant findings',
+    'Reviewing available sources',
+    'Checking additional references',
+    'Comparing recent findings',
+    'Verifying matching information',
+    'Checking source consistency',
+    'Reviewing relevant records',
+    'Scanning current information',
+    'Checking related results',
+    'Comparing useful references',
+    'Reviewing source coverage',
+    'Checking supporting sources',
+    'Verifying recent details',
+    'Scanning relevant pages',
+    'Reviewing current findings',
+    'Checking matching sources',
+    'Comparing available data',
+    'Reviewing source context',
+    'Checking additional results',
+    'Verifying current references',
+    'Scanning related information',
+    'Reviewing matching pages',
+    'Checking relevant records',
+    'Comparing source details',
+    'Reviewing current sources',
+    'Checking fresh references',
+    'Verifying useful findings',
+    'Scanning supporting information',
+    'Reviewing related sources',
+    'Checking recent references',
+    'Comparing relevant pages',
+    'Verifying source coverage',
+    'Scanning matching results',
+    'Reviewing available findings',
+    'Checking source signals',
+    'Comparing current references',
+    'Reviewing relevant details',
+    'Checking supporting pages',
+    'Verifying matching results',
+    'Scanning recent sources',
+    'Reviewing source findings',
+    'Checking related references',
+    'Comparing fresh information',
+    'Verifying current details',
+    'Scanning available sources',
+    'Reviewing matching references',
+    'Checking relevant findings',
+    'Comparing supporting sources',
+    'Reviewing recent pages',
+    'Verifying source information',
+    'Scanning current references',
+    'Checking matching pages',
+    'Reviewing additional sources',
+    'Comparing related findings',
+    'Checking source details',
+    'Verifying recent references',
+    'Scanning relevant information',
+    'Reviewing current pages',
+    'Checking supporting findings',
+    'Comparing matching references',
+    'Verifying available information',
+    'Scanning related pages',
+    'Reviewing source details',
+    'Checking fresh findings',
+    'Comparing current sources',
+    'Verifying relevant references',
+    'Scanning recent information',
+    'Reviewing matching sources',
+    'Checking available references',
+    'Comparing source findings',
+    'Verifying related information',
+    'Scanning supporting references',
+    'Reviewing fresh sources',
+    'Checking current details',
+    'Comparing relevant findings',
+    'Verifying matching pages',
+    'Scanning source references',
+    'Reviewing related details',
+    'Checking recent findings',
+    'Comparing available sources'
+];
+
+function randomSearchStatusDuration() {
+    const u = Math.random();
+    const v = Math.random();
+    const wave = (Math.sin(u * Math.PI * 2) + 1) / 2;
+
+    return Math.round(
+        2200 +
+        Math.pow(v, 0.68) * 4200 +
+        wave * 900
+    );
+}
+
+function getShuffledSearchStatusTopics() {
+    const topics = [
+        ...SEARCH_STATUS_TOPICS
+    ];
+
+    for (let i = topics.length - 1; i > 0; i--) {
+        const j = Math.floor(
+            Math.random() * (i + 1)
+        );
+
+        [
+            topics[i],
+            topics[j]
+        ] = [
+            topics[j],
+            topics[i]
+        ];
+    }
+
+    return topics;
+}
+
+function startWebSearchStatusBubble(chatId, replyToId, query) {
+    let stopped = false;
+    let statusMessage = null;
+    let timer = null;
+    let wake = null;
+    let dotIndex = 0;
+
+    const stop = () => {
+        stopped = true;
+
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+
+        if (wake) {
+            const resolve = wake;
+            wake = null;
+            resolve();
+        }
+    };
+
+    const waitOrStop = ms => new Promise(resolve => {
+        if (stopped) {
+            resolve();
+            return;
+        }
+
+        wake = resolve;
+
+        timer = setTimeout(() => {
+            timer = null;
+            wake = null;
+            resolve();
+        }, ms);
+    });
+
+    const editStatus = async baseText => {
+        if (!statusMessage || stopped) return;
+
+        const dots = [
+            '.',
+            '..',
+            '...'
+        ];
+
+        const text =
+            `${baseText}${dots[dotIndex]}`;
+
+        dotIndex =
+            (dotIndex + 1) % dots.length;
+
+        try {
+            await bot.editMessageText(
+                text,
+                {
+                    chat_id: chatId,
+                    message_id: statusMessage.message_id
+                }
+            );
+        } catch (error) {}
+    };
+
+    (async () => {
+        try {
+            statusMessage = await bot.sendMessage(
+                chatId,
+                '🔍Searching.',
+                {
+                    reply_to_message_id:
+                        replyToId || undefined
+                }
+            );
+
+            if (stopped) {
+                await bot.deleteMessage(
+                    chatId,
+                    statusMessage.message_id
+                ).catch(() => {});
+
+                return;
+            }
+
+            await waitOrStop(2000);
+
+            if (stopped) return;
+
+            const topics =
+                getShuffledSearchStatusTopics();
+
+            let topicIndex = 0;
+
+            while (!stopped) {
+                if (
+                    topicIndex >= topics.length
+                ) {
+                    const reshuffled =
+                        getShuffledSearchStatusTopics();
+
+                    topics.splice(
+                        0,
+                        topics.length,
+                        ...reshuffled
+                    );
+
+                    topicIndex = 0;
+                }
+
+                const topic =
+                    topics[topicIndex++];
+
+                const duration =
+                    randomSearchStatusDuration();
+
+                const endAt =
+                    Date.now() + duration;
+
+                while (
+                    !stopped &&
+                    Date.now() < endAt
+                ) {
+                    await editStatus(
+                        `⏳${topic}`
+                    );
+
+                    const remaining =
+                        endAt - Date.now();
+
+                    await waitOrStop(
+                        Math.min(
+                            650,
+                            Math.max(
+                                150,
+                                remaining
+                            )
+                        )
+                    );
+                }
+            }
+        } catch (error) {
+            console.warn(
+                '[SEARCH STATUS ERROR]',
+                error.message
+            );
+        }
+    })();
+
+    return stop;
+}
+
+async function _askAILogic(
+    chatId,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia,
+    currentKey,
+    currentModel,
+    replyToId = null
+) {
 
     // ============================================================
     // 🌐 WEB SEARCH
@@ -1133,41 +1427,59 @@ async function _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, curr
     // ============================================================
 
     let webContext = '';
+latestWebSearchByChat.set(String(chatId), []);
 
     if (!base64Media && shouldSearchWeb(finalPrompt)) {
 
-        try {
+    let stopSearchStatus = null;
 
-            console.log(
-                `[WEB SEARCH] Mencari data terbaru: ${String(finalPrompt).slice(0, 200)}`
-            );
+    try {
+        console.log(
+            `[WEB SEARCH] Mencari data terbaru: ${String(finalPrompt).slice(0, 200)}`
+        );
 
-            const webData = await searchWeb(finalPrompt);
+        if (!isSearchCached(finalPrompt)) {
+            stopSearchStatus =
+                startWebSearchStatusBubble(
+                    chatId,
+                    replyToId,
+                    finalPrompt
+                );
+        }
 
-            webContext = formatWebResultsForAI(webData);
+        const webData =
+            await searchWeb(finalPrompt);
 
-            console.log(
-                `[WEB SEARCH] Provider: ${webData.provider} | Hasil: ${webData.results.length}`
-            );
+        latestWebSearchByChat.set(
+            String(chatId),
+            Array.isArray(webData.results)
+                ? webData.results.slice(0, 10)
+                : []
+        );
 
-        } catch (webError) {
+        webContext =
+            formatWebResultsForAI(webData);
 
-            // ====================================================
-            // WEB SEARCH GAGAL?
-            //
-            // JANGAN BIKIN GEMINI IKUT MATI.
-            // Gemini tetap lanjut jawab normal.
-            // ====================================================
+        console.log(
+            `[WEB SEARCH] Provider: ${webData.provider} | Hasil: ${webData.results.length}`
+        );
 
-            console.error(
-                '[WEB SEARCH FAILED]',
-                webError.message
-            );
+    } catch (webError) {
+
+        console.error(
+            '[WEB SEARCH FAILED]',
+            webError.message
+        );
+
+    } finally {
+
+        if (stopSearchStatus) {
+            stopSearchStatus();
         }
     }
+}
 
     const history = historyFor(chatId);
-
     const contents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }]
@@ -1244,7 +1556,15 @@ async function askAI(chatId, finalPrompt, base64Media, mimeTypeMedia, replyToId 
         const currentModel = ROTATION_MODELS[currentModelIndex];
         
         try {
-            return await _askAILogic(chatId, finalPrompt, base64Media, mimeTypeMedia, currentKey, currentModel);
+            return await _askAILogic(
+    chatId,
+    finalPrompt,
+    base64Media,
+    mimeTypeMedia,
+    currentKey,
+    currentModel,
+    replyToId
+);
         } catch (error) {
             if (error.message === 'LIMIT_REACHED') {
                 attempts++;
@@ -1539,9 +1859,50 @@ if (isAlightMotionTopic(sourcePrompt)) {
     inline_keyboard = buildAMPremButtons();
 }
 
-// Notifikasi limit dibuat backend agar konsisten dan tidak bergantung
-// pada apakah model AI mengingat instruksi warning atau tidak.
+const webResults = latestWebSearchByChat.get(
+    String(chatId)
+) || [];
+
+if (webResults.length > 0) {
+    const webButtons = webResults
+        .filter(item =>
+            item &&
+            /^https?:\/\/\S+$/i.test(
+                String(item.url || '')
+            )
+        )
+        .slice(0, 3)
+        .map((item, index) => ({
+            text:
+                `🔗 ${String(item.title || `Sumber ${index + 1}`)
+                    .replace(/[\r\n]+/g, ' ')
+                    .slice(0, 38)}`,
+            url: String(item.url).trim()
+        }));
+
+    if (webButtons.length > 0) {
+        inline_keyboard = webButtons.map(button => [button]);
+    }
+
+    const previewImage =
+        webResults.find(item =>
+            /^https?:\/\/\S+$/i.test(
+                String(item.imageUrl || '')
+            )
+        )?.imageUrl || '';
+
+    if (!imageToSent && previewImage) {
+        imageToSent = previewImage;
+    }
+}
+
+if (isAlightMotionTopic(sourcePrompt)) {
+    imageToSent = AM_PREM_IMAGE_URL;
+    inline_keyboard = buildAMPremButtons();
+}
+
 const limitWarning = buildLimitWarning(limitInfo);
+
 if (limitWarning) {
     text += limitWarning;
 }
@@ -1601,7 +1962,10 @@ await sendReply(
     text,
     extraOptions
 );
-    return text;
+
+latestWebSearchByChat.delete(String(chatId));
+
+return text;
 }
 
 // ============================================================
